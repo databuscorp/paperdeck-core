@@ -18,7 +18,19 @@ class PaperGenerateRequest:
     id: Optional[int] = None
 
 
+@dataclass
+class PaperSaveRequest:
+    title: str
+    exam_type: str
+    total_marks: int
+    duration_minutes: int
+    meta: Any = None       # full PaperMeta object
+    sections: Any = None   # full sections + questions
+    id: Optional[int] = None
+
+
 paper_generate_req_schema = marshmallow_dataclass.class_schema(PaperGenerateRequest)()
+paper_save_req_schema = marshmallow_dataclass.class_schema(PaperSaveRequest)()
 
 
 @dataclass_json

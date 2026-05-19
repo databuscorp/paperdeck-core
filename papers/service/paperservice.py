@@ -75,6 +75,32 @@ class PaperService(DBService):
 
         return _build_paper_response(paper)
 
+    def save_paper(self, req, user_id):
+        if req.id:
+            try:
+                paper = Paper.objects.get(id=req.id, owner_id=user_id)
+            except Paper.DoesNotExist:
+                return ErrorResponse(status=404, message='Paper not found')
+            paper.title = req.title
+            paper.exam_type = req.exam_type
+            paper.total_marks = req.total_marks
+            paper.duration_minutes = req.duration_minutes
+            paper.content = {'meta': req.meta, 'sections': req.sections}
+            paper.status = Paper.STATUS_DRAFT
+            paper.save()
+        else:
+            paper = Paper.objects.create(
+                owner_id=user_id,
+                title=req.title,
+                exam_type=req.exam_type,
+                subjects=[],
+                total_marks=req.total_marks,
+                duration_minutes=req.duration_minutes,
+                content={'meta': req.meta, 'sections': req.sections},
+                status=Paper.STATUS_DRAFT,
+            )
+        return _build_paper_response(paper)
+
     def delete_paper(self, paper_id, user_id):
         deleted, _ = Paper.objects.filter(id=paper_id, owner_id=user_id).delete()
         if not deleted:

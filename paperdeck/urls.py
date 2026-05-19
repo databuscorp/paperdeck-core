@@ -14,4 +14,5 @@ urlpatterns = [
     path('api/questions/', include('questions.urls')),
     path('api/mocktests/', include('mocktests.urls')),
     path('api/blueprints/', include('blueprints.urls')),
+    path('api/exams/', include('exams.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

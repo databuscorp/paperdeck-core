@@ -30,6 +30,7 @@ INSTALLED_APPS = [
     'questions',
     'mocktests',
     'blueprints',
+    'exams',
 ]
 
 MIDDLEWARE = [

@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 import anthropic
 
@@ -133,30 +134,67 @@ class AIGeneratorService:
                 paper_data["sections"][i] = corrected
         return paper_data
 
+    # Max questions per single API call — keeps output tokens well under limit
+    _BATCH_SIZE = 10
+    # Seconds to wait between batches to stay under 10k output tokens/minute
+    _INTER_BATCH_DELAY = 6
+
     def generate_questions(self, exam: str, subject: str, topic: str, q_type: str,
                            difficulty: str, bloom: str, count: int) -> list:
         if not self._client:
             return self._mock_questions(exam, subject, topic, q_type, difficulty, bloom, count)
 
-        options_instruction = ""
-        if q_type == "MCQ":
+        if count <= self._BATCH_SIZE:
+            return self._generate_batch(exam, subject, topic, q_type, difficulty, bloom, count)
+
+        results = []
+        remaining = count
+        while remaining > 0:
+            batch = min(remaining, self._BATCH_SIZE)
+            if results:
+                time.sleep(self._INTER_BATCH_DELAY)
+            results.extend(self._generate_batch(exam, subject, topic, q_type, difficulty, bloom, batch))
+            remaining -= batch
+        return results
+
+    def _generate_batch(self, exam: str, subject: str, topic: str, q_type: str,
+                        difficulty: str, bloom: str, count: int, _retry: int = 0) -> list:
+        is_image_based = q_type == "Image Based"
+
+        if q_type in ("MCQ", "Image Based"):
             options_instruction = (
-                '"options": [{"text": "Option text", "correct": true_or_false}, '
-                '{"text": "...", "correct": false}, {"text": "...", "correct": false}, '
-                '{"text": "...", "correct": false}],'
+                '"options": [{"text": "Option A text", "correct": true}, '
+                '{"text": "Option B text", "correct": false}, '
+                '{"text": "Option C text", "correct": false}, '
+                '{"text": "Option D text", "correct": false}],'
             )
         else:
             options_instruction = '"options": null,'
 
-        diff_instruction = "" if difficulty == "Mixed" else f"Difficulty: {difficulty}."
-        bloom_instruction = "" if bloom == "Mixed" else f"Bloom\\'s level: {bloom}."
+        image_field = (
+            '"image_description": "One-line label for the diagram (e.g. Ray diagram of a concave lens).",'
+            '"image_svg": "Complete inline SVG markup. RULES: (1) Use single quotes for ALL XML attributes. (2) viewBox=\'0 0 400 280\' xmlns=\'http://www.w3.org/2000/svg\'. (3) No newlines — write the entire SVG as one line. (4) Use only rect, circle, line, polyline, path, text, ellipse elements. (5) Draw a clear, labelled scientific diagram relevant to the question (e.g. circuit with resistors and battery, lens with rays, cell diagram, force diagram). (6) Black strokes on white background. Example start: <svg viewBox=\'0 0 400 280\' xmlns=\'http://www.w3.org/2000/svg\'><rect width=\'400\' height=\'280\' fill=\'white\'/>...</svg>",'
+            if is_image_based else
+            '"image_description": null, "image_svg": null,'
+        )
 
-        prompt = f"""Generate exactly {count} {q_type} questions for the {exam} exam.
+        diff_instruction = "" if difficulty == "Mixed" else f"Difficulty: {difficulty}."
+        bloom_instruction = "" if bloom == "Mixed" else f"Bloom's level: {bloom}."
+
+        q_type_label = "MCQ" if is_image_based else q_type
+        type_note = (
+            "These are diagram/figure-based MCQs. Each question must reference a specific diagram or figure. "
+            "Write the question text as if the student is looking at the described figure."
+            if is_image_based else ""
+        )
+
+        prompt = f"""Generate exactly {count} {q_type_label} questions for the {exam} exam.
 Subject: {subject}
 Topic: {topic or 'General'}
 {diff_instruction} {bloom_instruction}
+{type_note}
 
-Return ONLY a valid JSON array. Each element must have this exact structure:
+Return ONLY a valid JSON array with no markdown or extra text. Each element:
 {{
   "exam": "{exam}",
   "subject": "{subject}",
@@ -164,23 +202,43 @@ Return ONLY a valid JSON array. Each element must have this exact structure:
   "q_type": "{q_type}",
   "difficulty": "Easy|Medium|Hard|HOTS",
   "bloom": "Remember|Understand|Apply|Analyze|Evaluate|Create",
-  "marks": <integer>,
+  "marks": 4,
   "text": "Question text here",
+  {image_field}
   {options_instruction}
-  "explanation": "Brief explanation of the correct answer"
+  "explanation": "One sentence explanation"
 }}
 
-Generate high-quality, curriculum-accurate questions suitable for {exam}. Return exactly {count} questions as a JSON array."""
+Return exactly {count} questions as a JSON array. Keep explanations concise (one sentence)."""
 
-        message = self._client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=8192,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = message.content[0].text.strip()
-        # Strip markdown code fences if present
+        try:
+            message = self._client.messages.create(
+                model=HAIKU_MODEL,
+                max_tokens=8192,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return self._parse_questions_response(message.content[0].text.strip())
+        except anthropic.RateLimitError:
+            if _retry >= 4:
+                raise
+            wait = (2 ** _retry) * 15  # 15s, 30s, 60s, 120s
+            time.sleep(wait)
+            return self._generate_batch(exam, subject, topic, q_type, difficulty, bloom, count, _retry + 1)
+
+    @staticmethod
+    def _parse_questions_response(raw: str) -> list:
+        # Strip markdown code fences
         if raw.startswith("```"):
-            raw = raw[raw.find("["):raw.rfind("]") + 1]
+            start = raw.find("[")
+            end = raw.rfind("]")
+            if start != -1 and end != -1:
+                raw = raw[start:end + 1]
+        elif not raw.startswith("["):
+            # Find the JSON array anywhere in the response
+            start = raw.find("[")
+            end = raw.rfind("]")
+            if start != -1 and end != -1:
+                raw = raw[start:end + 1]
         return json.loads(raw)
 
     def _mock_questions(self, exam: str, subject: str, topic: str, q_type: str,
