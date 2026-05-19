@@ -1,0 +1,12 @@
+Django==5.1.5
+djangorestframework==3.15.2
+djangorestframework-simplejwt==5.3.1
+django-cors-headers==4.6.0
+python-dotenv==1.0.1
+psycopg2-binary==2.9.11  # optional: only needed for PostgreSQL
+dataclasses-json==0.6.7
+marshmallow-dataclass==8.7.1
+dacite==1.8.1
+anthropic==0.40.0
+Pillow==11.1.0
+gunicorn==23.0.0
