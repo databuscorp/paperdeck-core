@@ -61,3 +61,22 @@ class UserService:
 
     def me(self, user: User):
         return _build_user_response(user)
+
+    def update_profile(self, user: User, req):
+        if req.first_name is not None:
+            user.first_name = req.first_name
+        if req.last_name is not None:
+            user.last_name = req.last_name
+        if req.phone is not None:
+            user.phone = req.phone
+        if req.institute_name is not None:
+            user.institute_name = req.institute_name
+        user.save()
+        return _build_user_response(user)
+
+    def change_password(self, user: User, req):
+        if not user.check_password(req.current_password):
+            return ErrorResponse(status=400, message='Current password is incorrect')
+        user.set_password(req.new_password)
+        user.save()
+        return SuccessResponse(status=200, message='Password changed successfully')
