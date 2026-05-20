@@ -1,3 +1,4 @@
+from courses.models import Course
 from subjects.models import Subject, SyllabusFile
 from subjects.processor.subjectprocessor import SubjectResponse, SyllabusFileResponse
 from utility.dbservice import DBService
@@ -49,6 +50,8 @@ class SubjectService(DBService):
 
     def create_or_update_subject(self, req, org_id=None):
         if req.id is None:
+            if org_id and not Course.objects.filter(id=req.course_id, owner__org_id=org_id).exists():
+                return ErrorResponse(status=403, message='Course not found or access denied')
             subject = Subject.objects.create(
                 course_id=req.course_id,
                 name=req.name,

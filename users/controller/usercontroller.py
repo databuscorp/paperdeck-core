@@ -1,3 +1,5 @@
+import json
+
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes
@@ -6,6 +8,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 
+from users.models import User
 from users.processor.userprocessor import (
     register_req_schema, login_req_schema,
     update_profile_req_schema, change_password_req_schema,
@@ -112,8 +115,6 @@ def invite_user(request):
 @api_view(['GET'])
 @auth_required
 def list_org_users(request):
-    from users.models import User
-    import json
     org_id = request.scope.get('org_id')
     if not org_id:
         return HttpResponse('[]', content_type='application/json')

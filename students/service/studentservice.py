@@ -1,3 +1,4 @@
+from courses.models import Course
 from students.models import Student
 from students.processor.studentprocessor import StudentResponse
 from utility.dbservice import DBService
@@ -57,6 +58,8 @@ class StudentService(DBService):
 
     def create_or_update_student(self, req, org_id=None):
         if req.id is None:
+            if org_id and not Course.objects.filter(id=req.course_id, owner__org_id=org_id).exists():
+                return ErrorResponse(status=403, message='Course not found or access denied')
             student = Student.objects.create(
                 course_id=req.course_id,
                 name=req.name,

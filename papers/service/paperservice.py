@@ -1,3 +1,4 @@
+from courses.models import Course
 from papers.models import Paper
 from papers.processor.paperprocessor import PaperResponse
 from papers.service.aigeneratorservice import AIGeneratorService
@@ -43,7 +44,9 @@ class PaperService(DBService):
             return ErrorResponse(status=404, message='Paper not found')
         return _build_paper_response(paper)
 
-    def generate_paper(self, req, user_id):
+    def generate_paper(self, req, user_id, org_id=None):
+        if req.course_id and org_id and not Course.objects.filter(id=req.course_id, owner__org_id=org_id).exists():
+            return ErrorResponse(status=403, message='Course not found or access denied')
         paper = Paper.objects.create(
             owner_id=user_id,
             course_id=req.course_id,
@@ -73,8 +76,9 @@ class PaperService(DBService):
             paper.save()
             return ErrorResponse(status=500, message=f'Paper generation failed: {str(e)}')
 
+        from django.db.models import F
         from users.models import User
-        User.objects.filter(id=user_id).update(papers_used=User.objects.get(id=user_id).papers_used + 1)
+        User.objects.filter(id=user_id).update(papers_used=F('papers_used') + 1)
 
         return _build_paper_response(paper)
 
@@ -95,6 +99,9 @@ class PaperService(DBService):
             paper.status = Paper.STATUS_DRAFT
             paper.save()
         else:
+            course_id = getattr(req, 'course_id', None)
+            if course_id and org_id and not Course.objects.filter(id=course_id, owner__org_id=org_id).exists():
+                return ErrorResponse(status=403, message='Course not found or access denied')
             paper = Paper.objects.create(
                 owner_id=user_id,
                 title=req.title,

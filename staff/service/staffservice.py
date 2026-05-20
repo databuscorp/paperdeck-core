@@ -1,3 +1,4 @@
+from courses.models import Course
 from staff.models import Staff
 from staff.processor.staffprocessor import StaffResponse
 from utility.dbservice import DBService
@@ -57,6 +58,8 @@ class StaffService(DBService):
 
     def create_or_update_staff(self, req, org_id=None):
         if req.id is None:
+            if org_id and not Course.objects.filter(id=req.course_id, owner__org_id=org_id).exists():
+                return ErrorResponse(status=403, message='Course not found or access denied')
             member = Staff.objects.create(
                 course_id=req.course_id,
                 name=req.name,

@@ -67,9 +67,10 @@ def _fetch_papers(request):
 def _generate_paper(request):
     scope = request.scope
     user_id = scope['user_id']
+    org_id = scope.get('org_id')
     obj = paper_generate_req_schema.load(request.data)
     service = PaperService(scope)
-    resp = service.generate_paper(obj, user_id)
+    resp = service.generate_paper(obj, user_id, org_id=org_id)
     if isinstance(resp, ErrorResponse):
         return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
     return HttpResponse(resp.to_json(), content_type='application/json')
