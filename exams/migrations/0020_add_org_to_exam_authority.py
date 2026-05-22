@@ -6,7 +6,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('exams', '0019_add_is_sys'),
-        ('users', '0001_initial'),
+        ('users', '0002_add_organization'),
     ]
 
     operations = [

@@ -4,7 +4,7 @@ from django.db import migrations
 BLUEPRINTS = [
     # ── CAT ──────────────────────────────────────────────────────────────────
     {
-        'course_id': '0ba0868f-9acf-4fdb-b879-9edd78795f63',
+        'course_slug': 'cat',
         'duration': '2 Hours',
         'total_marks': 198,
         'neg_marking_enabled': True,
@@ -20,7 +20,7 @@ BLUEPRINTS = [
     },
     # ── CLAT UG ──────────────────────────────────────────────────────────────
     {
-        'course_id': 'c20ba509-4a80-4616-89a7-39d95b960864',
+        'course_slug': 'clat',
         'duration': '2 Hours',
         'total_marks': 150,
         'neg_marking_enabled': True,
@@ -35,7 +35,7 @@ BLUEPRINTS = [
     },
     # ── CLAT PG ──────────────────────────────────────────────────────────────
     {
-        'course_id': 'bf7ae215-effb-4741-ac4e-91064f40a3c7',
+        'course_slug': 'clat-pg',
         'duration': '2 Hours',
         'total_marks': 150,
         'neg_marking_enabled': True,
@@ -50,7 +50,7 @@ BLUEPRINTS = [
     },
     # ── CMAT ─────────────────────────────────────────────────────────────────
     {
-        'course_id': 'ba0eb025-1d5d-4b92-a74c-8124855927d7',
+        'course_slug': 'cmat',
         'duration': '3 Hours',
         'total_marks': 400,
         'neg_marking_enabled': True,
@@ -64,7 +64,7 @@ BLUEPRINTS = [
     },
     # ── CUET PG ──────────────────────────────────────────────────────────────
     {
-        'course_id': '423dcacb-4453-4b2b-95a4-62a019783cea',
+        'course_slug': 'cuet-pg',
         'duration': '2 Hours',
         'total_marks': 400,
         'neg_marking_enabled': True,
@@ -76,7 +76,7 @@ BLUEPRINTS = [
     },
     # ── CUET UG ──────────────────────────────────────────────────────────────
     {
-        'course_id': '3f2f1290-0c2d-4f63-b83b-4bf14a175f72',
+        'course_slug': 'cuet-ug',
         'duration': '3 Hours 15 Minutes',
         'total_marks': 700,
         'neg_marking_enabled': True,
@@ -89,7 +89,7 @@ BLUEPRINTS = [
     },
     # ── GATE CS ──────────────────────────────────────────────────────────────
     {
-        'course_id': '29dc7d67-954f-4351-b2f9-803edb5374b0',
+        'course_slug': 'gate-cs',
         'duration': '3 Hours',
         'total_marks': 100,
         'neg_marking_enabled': True,
@@ -103,7 +103,7 @@ BLUEPRINTS = [
     },
     # ── GATE Civil ───────────────────────────────────────────────────────────
     {
-        'course_id': '984eb819-5f55-4347-a144-ca2456015fb4',
+        'course_slug': 'gate-civil',
         'duration': '3 Hours',
         'total_marks': 100,
         'neg_marking_enabled': True,
@@ -117,7 +117,7 @@ BLUEPRINTS = [
     },
     # ── GATE ECE ─────────────────────────────────────────────────────────────
     {
-        'course_id': '8d610185-6e14-492b-b77f-334b213ec4cd',
+        'course_slug': 'gate-ece',
         'duration': '3 Hours',
         'total_marks': 100,
         'neg_marking_enabled': True,
@@ -131,7 +131,7 @@ BLUEPRINTS = [
     },
     # ── GATE EE ──────────────────────────────────────────────────────────────
     {
-        'course_id': '08a742a1-47a6-43ca-ae03-a52e364931d2',
+        'course_slug': 'gate-ee',
         'duration': '3 Hours',
         'total_marks': 100,
         'neg_marking_enabled': True,
@@ -145,7 +145,7 @@ BLUEPRINTS = [
     },
     # ── GATE ME ──────────────────────────────────────────────────────────────
     {
-        'course_id': '0f7f4d9c-1215-4c33-9c13-a5ef0b17bee4',
+        'course_slug': 'gate-me',
         'duration': '3 Hours',
         'total_marks': 100,
         'neg_marking_enabled': True,
@@ -159,7 +159,7 @@ BLUEPRINTS = [
     },
     # ── GMAT Focus Edition ───────────────────────────────────────────────────
     {
-        'course_id': '73cee998-aff7-4319-bbfa-630d72a5aac4',
+        'course_slug': 'gmat',
         'duration': '2 Hours 15 Minutes',
         'total_marks': 64,
         'neg_marking_enabled': False,
@@ -172,7 +172,7 @@ BLUEPRINTS = [
     },
     # ── GRE General ──────────────────────────────────────────────────────────
     {
-        'course_id': 'da7c0a14-1104-49c5-9748-bc2ecb3cd141',
+        'course_slug': 'gre',
         'duration': '1 Hour 58 Minutes',
         'total_marks': 55,
         'neg_marking_enabled': False,
@@ -187,7 +187,7 @@ BLUEPRINTS = [
     },
     # ── IIFT ─────────────────────────────────────────────────────────────────
     {
-        'course_id': '93e0a950-ea06-460c-a92a-b7825b54095f',
+        'course_slug': 'iift',
         'duration': '2 Hours',
         'total_marks': 300,
         'neg_marking_enabled': True,
@@ -201,7 +201,7 @@ BLUEPRINTS = [
     },
     # ── JEE Advanced Paper 1 ─────────────────────────────────────────────────
     {
-        'course_id': '60fe75c1-0da9-4d48-b857-5e876ff65184',
+        'course_slug': 'jee-advanced-paper-1',
         'duration': '3 Hours',
         'total_marks': 180,
         'neg_marking_enabled': True,
@@ -220,7 +220,7 @@ BLUEPRINTS = [
     },
     # ── JEE Advanced Paper 2 ─────────────────────────────────────────────────
     {
-        'course_id': '990a1b39-2158-4d25-8584-9ea088dbaddf',
+        'course_slug': 'jee-advanced-paper-2',
         'duration': '3 Hours',
         'total_marks': 180,
         'neg_marking_enabled': True,
@@ -239,7 +239,7 @@ BLUEPRINTS = [
     },
     # ── JEE Mains ────────────────────────────────────────────────────────────
     {
-        'course_id': '96ff31f0-b25f-48e3-a37c-16b04c198218',
+        'course_slug': 'jee-mains',
         'duration': '3 Hours',
         'total_marks': 300,
         'neg_marking_enabled': True,
@@ -255,7 +255,7 @@ BLUEPRINTS = [
     },
     # ── MAT ──────────────────────────────────────────────────────────────────
     {
-        'course_id': '9ba06831-6ccf-4a5e-b348-04eab6da1a89',
+        'course_slug': 'mat',
         'duration': '2 Hours 30 Minutes',
         'total_marks': 200,
         'neg_marking_enabled': True,
@@ -270,7 +270,7 @@ BLUEPRINTS = [
     },
     # ── NEET PG ──────────────────────────────────────────────────────────────
     {
-        'course_id': '1cddf49f-1dce-449d-9ca8-c561e93edfd7',
+        'course_slug': 'neet-pg',
         'duration': '3 Hours 30 Minutes',
         'total_marks': 800,
         'neg_marking_enabled': True,
@@ -283,7 +283,7 @@ BLUEPRINTS = [
     },
     # ── NEET UG ──────────────────────────────────────────────────────────────
     {
-        'course_id': '9c24de70-b24e-4df6-8c2f-f8c6a015ed38',
+        'course_slug': 'neet-ug',
         'duration': '3 Hours 20 Minutes',
         'total_marks': 720,
         'neg_marking_enabled': True,
@@ -301,7 +301,7 @@ BLUEPRINTS = [
     },
     # ── NMAT ─────────────────────────────────────────────────────────────────
     {
-        'course_id': 'e87ee9b4-aeac-4e6b-b1f9-9d202f0943bb',
+        'course_slug': 'nmat',
         'duration': '2 Hours',
         'total_marks': 108,
         'neg_marking_enabled': False,
@@ -314,7 +314,7 @@ BLUEPRINTS = [
     },
     # ── SNAP ─────────────────────────────────────────────────────────────────
     {
-        'course_id': 'cac55d83-445a-4d8f-a3da-27a83b1ab3ef',
+        'course_slug': 'snap',
         'duration': '1 Hour',
         'total_marks': 90,
         'neg_marking_enabled': True,
@@ -327,7 +327,7 @@ BLUEPRINTS = [
     },
     # ── SSC CGL Tier 1 ───────────────────────────────────────────────────────
     {
-        'course_id': '2f06fe90-eb1a-476c-b633-f9a20ecabcb2',
+        'course_slug': 'ssc-cgl',
         'duration': '1 Hour',
         'total_marks': 200,
         'neg_marking_enabled': True,
@@ -341,7 +341,7 @@ BLUEPRINTS = [
     },
     # ── SSC CGL Tier 2 ───────────────────────────────────────────────────────
     {
-        'course_id': '2b7649ef-c249-4320-9135-17e39a6d313a',
+        'course_slug': 'ssc-cgl-tier-2',
         'duration': '2 Hours 30 Minutes',
         'total_marks': 450,
         'neg_marking_enabled': True,
@@ -356,7 +356,7 @@ BLUEPRINTS = [
     },
     # ── TISSNET ──────────────────────────────────────────────────────────────
     {
-        'course_id': '26a473ba-fc12-442e-98f3-d4bfefc7fe08',
+        'course_slug': 'tissnet',
         'duration': '1 Hour 40 Minutes',
         'total_marks': 100,
         'neg_marking_enabled': False,
@@ -369,7 +369,7 @@ BLUEPRINTS = [
     },
     # ── UPSC CSE Prelims Paper 1 ──────────────────────────────────────────────
     {
-        'course_id': '59d985f7-d772-4d1f-ae07-889a22af52b2',
+        'course_slug': 'upsc-cse-prelims-paper-1',
         'duration': '2 Hours',
         'total_marks': 200,
         'neg_marking_enabled': True,
@@ -386,7 +386,7 @@ BLUEPRINTS = [
     },
     # ── UPSC CSE Prelims Paper 2 (CSAT) ──────────────────────────────────────
     {
-        'course_id': 'a50d7ab8-345a-42f8-bc6e-e98929dd8602',
+        'course_slug': 'upsc-cse-prelims-paper-2',
         'duration': '2 Hours',
         'total_marks': 200,
         'neg_marking_enabled': True,
@@ -401,7 +401,7 @@ BLUEPRINTS = [
     },
     # ── XAT ──────────────────────────────────────────────────────────────────
     {
-        'course_id': 'fcaff2a2-a0b0-4d03-9aa9-f829c339b50e',
+        'course_slug': 'xat',
         'duration': '3 Hours',
         'total_marks': 100,
         'neg_marking_enabled': True,
@@ -419,12 +419,17 @@ BLUEPRINTS = [
 def seed_blueprints(apps, schema_editor):
     Blueprint = apps.get_model('blueprints', 'Blueprint')
     BlueprintSection = apps.get_model('blueprints', 'BlueprintSection')
+    Course = apps.get_model('courses', 'Course')
+    course_map = {c.slug: c for c in Course.objects.filter(is_sys=True)}
     for bp_data in BLUEPRINTS:
         sections = bp_data.pop('sections')
-        bp = Blueprint.objects.create(is_sys=True, **bp_data)
+        slug = bp_data.pop('course_slug')
+        course = course_map.get(slug)
+        bp = Blueprint.objects.create(is_sys=True, course=course, **bp_data)
         for s in sections:
             BlueprintSection.objects.create(blueprint=bp, topics='', **s)
-        bp_data['sections'] = sections  # restore for idempotency if re-run
+        bp_data['course_slug'] = slug
+        bp_data['sections'] = sections
 
 
 def unseed_blueprints(apps, schema_editor):

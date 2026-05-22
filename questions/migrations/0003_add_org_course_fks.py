@@ -15,8 +15,8 @@ class Migration(migrations.Migration):
     dependencies = [
         ('questions', '0002_add_image_svg'),
         ('courses', '0001_initial'),
-        ('subjects', '0001_initial'),
-        ('users', '0001_initial'),
+        ('subjects', '0005_add_topics_chapters'),
+        ('users', '0002_add_organization'),
     ]
 
     operations = [

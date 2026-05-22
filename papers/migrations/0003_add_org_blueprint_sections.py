@@ -17,7 +17,7 @@ class Migration(migrations.Migration):
         ('blueprints', '0004_seed_sys_blueprints'),
         ('subjects', '0001_initial'),
         ('questions', '0003_add_org_course_fks'),
-        ('users', '0001_initial'),
+        ('users', '0002_add_organization'),
     ]
 
     operations = [

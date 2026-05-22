@@ -61,6 +61,9 @@ class Migration(migrations.Migration):
         ('courses', '0002_initial'),
         ('exams', '0017_add_exam_authority'),
         ('users', '0001_initial'),
+        ('staff', '0001_initial'),
+        ('students', '0001_initial'),
+        ('subjects', '0001_initial'),
     ]
 
     operations = [
