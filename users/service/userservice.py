@@ -64,13 +64,11 @@ class UserService:
             return ErrorResponse(status=403, message='Only admins can invite users')
         if not admin_user.org_id:
             return ErrorResponse(status=400, message='Admin has no organization')
-        if User.objects.filter(username=req.username).exists():
-            return ErrorResponse(status=400, message='Username already taken')
         if User.objects.filter(email=req.email).exists():
             return ErrorResponse(status=400, message='Email already registered')
 
         user = User.objects.create_user(
-            username=req.username,
+            username=req.email,
             email=req.email,
             password=req.password,
             first_name=req.first_name or '',
@@ -80,6 +78,29 @@ class UserService:
             institute_name=admin_user.institute_name,
             role=req.role,
         )
+
+        full_name = ' '.join(filter(None, [req.first_name, req.last_name])) or req.username
+        if req.role == User.ROLE_STAFF:
+            from staff.models import Staff
+            if not Staff.objects.filter(email=req.email, org_id=admin_user.org_id).exists():
+                Staff.objects.create(
+                    org_id=admin_user.org_id,
+                    name=full_name,
+                    email=req.email,
+                    phone=req.phone,
+                    user=user,
+                )
+        elif req.role == User.ROLE_STUDENT:
+            from students.models import Student
+            if not Student.objects.filter(email=req.email, org_id=admin_user.org_id).exists():
+                Student.objects.create(
+                    org_id=admin_user.org_id,
+                    name=full_name,
+                    email=req.email,
+                    phone=req.phone,
+                    user=user,
+                )
+
         return _build_user_response(user)
 
     def login(self, req):

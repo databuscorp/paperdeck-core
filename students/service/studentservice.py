@@ -55,17 +55,15 @@ class StudentService(DBService):
         return [_build_student_response(s) for s in qs.distinct()]
 
     def fetch_all_students(self, user_id, org_id=None):
+        qs = Student.objects.prefetch_related('courses').order_by('name')
         if org_id:
-            qs = Student.objects.filter(org_id=org_id)
-        else:
-            qs = Student.objects.filter(courses__created_by_id=user_id).distinct()
-        qs = qs.prefetch_related('courses').order_by('name')
+            qs = qs.filter(org_id=org_id)
         return [_build_student_response(s) for s in qs]
 
     def fetch_one_student(self, student_id, org_id=None):
         try:
             s = Student.objects.prefetch_related('courses').get(id=student_id)
-            if org_id and s.org_id != org_id:
+            if org_id and s.org_id is not None and s.org_id != org_id:
                 return ErrorResponse(status=404, message='Student not found')
             return _build_student_response(s)
         except Student.DoesNotExist:
@@ -91,12 +89,12 @@ class StudentService(DBService):
                 user=user,
             )
             if req.course_ids:
-                if org_id:
-                    from courses.models import Course
-                    valid_ids = list(Course.objects.filter(id__in=req.course_ids, org_id=org_id).values_list('id', flat=True))
-                    student.courses.set(valid_ids)
-                else:
-                    student.courses.set(req.course_ids)
+                from courses.models import Course
+                from django.db.models import Q
+                valid_ids = list(Course.objects.filter(
+                    Q(id__in=req.course_ids) & (Q(org_id=org_id) | Q(is_sys=True))
+                ).values_list('id', flat=True))
+                student.courses.set(valid_ids)
         else:
             try:
                 student = Student.objects.prefetch_related('courses').get(id=req.id)

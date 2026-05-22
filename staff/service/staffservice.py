@@ -56,17 +56,15 @@ class StaffService(DBService):
         return [_build_staff_response(s) for s in qs.distinct()]
 
     def fetch_all_staff(self, user_id, org_id=None):
+        qs = Staff.objects.prefetch_related('courses').order_by('name')
         if org_id:
-            qs = Staff.objects.filter(org_id=org_id)
-        else:
-            qs = Staff.objects.filter(courses__created_by_id=user_id).distinct()
-        qs = qs.prefetch_related('courses').order_by('name')
+            qs = qs.filter(org_id=org_id)
         return [_build_staff_response(s) for s in qs]
 
     def fetch_one_staff(self, staff_id, org_id=None):
         try:
             s = Staff.objects.prefetch_related('courses').get(id=staff_id)
-            if org_id and s.org_id != org_id:
+            if org_id and s.org_id is not None and s.org_id != org_id:
                 return ErrorResponse(status=404, message='Staff not found')
             return _build_staff_response(s)
         except Staff.DoesNotExist:
@@ -93,12 +91,12 @@ class StaffService(DBService):
                 user=user,
             )
             if req.course_ids:
-                if org_id:
-                    from courses.models import Course
-                    valid_ids = list(Course.objects.filter(id__in=req.course_ids, org_id=org_id).values_list('id', flat=True))
-                    member.courses.set(valid_ids)
-                else:
-                    member.courses.set(req.course_ids)
+                from courses.models import Course
+                from django.db.models import Q
+                valid_ids = list(Course.objects.filter(
+                    Q(id__in=req.course_ids) & (Q(org_id=org_id) | Q(is_sys=True))
+                ).values_list('id', flat=True))
+                member.courses.set(valid_ids)
         else:
             try:
                 member = Staff.objects.prefetch_related('courses').get(id=req.id)
