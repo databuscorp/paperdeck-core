@@ -39,6 +39,7 @@ class UserResponse:
     institute_name: Optional[str]
     phone: Optional[str]
     role: int
+    role_name: str          # "admin" | "staff" | "student"
     plan: str
     papers_used: int
     org_id: Optional[int] = None

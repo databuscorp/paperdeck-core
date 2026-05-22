@@ -1,4 +1,3 @@
-from courses.models import Course
 from students.models import Student
 from students.processor.studentprocessor import StudentResponse
 from utility.dbservice import DBService
@@ -13,18 +12,35 @@ def _fmt_date(d):
     return d.strftime('%Y-%m-%d')
 
 
-def _build_student_response(s: Student, course_name: str = None) -> StudentResponse:
+def _build_student_response(s: Student) -> StudentResponse:
+    courses = list(s.courses.all())
     return StudentResponse(
         id=s.id,
-        course_id=s.course_id,
         name=s.name,
         email=s.email,
         phone=s.phone,
         roll_no=s.roll_no,
         joined_date=_fmt_date(s.joined_date),
-        attendance=s.attendance,
         created_at=s.created_at.isoformat(),
-        course_name=course_name,
+        user_id=s.user_id,
+        course_ids=[str(c.id) for c in courses],
+        course_names=[c.name for c in courses],
+    )
+
+
+def _create_user(email, password, name, org_id, role_const):
+    from users.models import User
+    if User.objects.filter(email=email).exists():
+        raise ValueError(f'A user with email {email} already exists')
+    name_parts = name.strip().split(' ', 1)
+    return User.objects.create_user(
+        username=email,
+        email=email,
+        password=password,
+        first_name=name_parts[0],
+        last_name=name_parts[1] if len(name_parts) > 1 else '',
+        org_id=org_id,
+        role=role_const,
     )
 
 
@@ -33,64 +49,77 @@ class StudentService(DBService):
         super().__init__(scope)
 
     def fetch_students(self, course_id, org_id=None):
+        qs = Student.objects.filter(courses__id=course_id).prefetch_related('courses')
         if org_id:
-            students = Student.objects.filter(course_id=course_id, course__owner__org_id=org_id)
-        else:
-            students = Student.objects.filter(course_id=course_id)
-        return [_build_student_response(s) for s in students]
+            qs = qs.filter(org_id=org_id)
+        return [_build_student_response(s) for s in qs.distinct()]
 
     def fetch_all_students(self, user_id, org_id=None):
         if org_id:
-            students = Student.objects.filter(course__owner__org_id=org_id).select_related('course').order_by('course__name', 'name')
+            qs = Student.objects.filter(org_id=org_id)
         else:
-            students = Student.objects.filter(course__owner_id=user_id).select_related('course').order_by('course__name', 'name')
-        return [_build_student_response(s, course_name=s.course.name) for s in students]
+            qs = Student.objects.filter(courses__created_by_id=user_id).distinct()
+        qs = qs.prefetch_related('courses').order_by('name')
+        return [_build_student_response(s) for s in qs]
 
     def fetch_one_student(self, student_id, org_id=None):
         try:
-            if org_id:
-                s = Student.objects.select_related('course').get(id=student_id, course__owner__org_id=org_id)
-            else:
-                s = Student.objects.select_related('course').get(id=student_id)
-            return _build_student_response(s, course_name=s.course.name)
+            s = Student.objects.prefetch_related('courses').get(id=student_id)
+            if org_id and s.org_id != org_id:
+                return ErrorResponse(status=404, message='Student not found')
+            return _build_student_response(s)
         except Student.DoesNotExist:
             return ErrorResponse(status=404, message='Student not found')
 
     def create_or_update_student(self, req, org_id=None):
         if req.id is None:
-            if org_id and not Course.objects.filter(id=req.course_id, owner__org_id=org_id).exists():
-                return ErrorResponse(status=403, message='Course not found or access denied')
+            user = None
+            if req.email and req.password:
+                from users.models import User
+                try:
+                    user = _create_user(req.email, req.password, req.name, org_id, User.ROLE_STUDENT)
+                except ValueError as e:
+                    return ErrorResponse(status=409, message=str(e))
+
             student = Student.objects.create(
-                course_id=req.course_id,
+                org_id=org_id,
                 name=req.name,
                 email=req.email,
                 phone=req.phone,
                 roll_no=req.roll_no,
                 joined_date=req.joined_date or None,
-                attendance=req.attendance or 0,
+                user=user,
             )
+            if req.course_ids:
+                if org_id:
+                    from courses.models import Course
+                    valid_ids = list(Course.objects.filter(id__in=req.course_ids, org_id=org_id).values_list('id', flat=True))
+                    student.courses.set(valid_ids)
+                else:
+                    student.courses.set(req.course_ids)
         else:
             try:
-                if org_id:
-                    student = Student.objects.get(id=req.id, course__owner__org_id=org_id)
-                else:
-                    student = Student.objects.get(id=req.id)
+                student = Student.objects.prefetch_related('courses').get(id=req.id)
             except Student.DoesNotExist:
+                return ErrorResponse(status=404, message='Student not found')
+            if org_id and student.org_id != org_id:
                 return ErrorResponse(status=404, message='Student not found')
             student.name = req.name
             student.email = req.email
             student.phone = req.phone
             student.roll_no = req.roll_no
             student.joined_date = req.joined_date or None
-            student.attendance = req.attendance or student.attendance
             student.save()
-        return _build_student_response(student)
+            if req.course_ids is not None:
+                student.courses.set(req.course_ids)
+        return _build_student_response(Student.objects.prefetch_related('courses').get(id=student.id))
 
     def delete_student(self, student_id, org_id=None):
-        if org_id:
-            deleted, _ = Student.objects.filter(id=student_id, course__owner__org_id=org_id).delete()
-        else:
-            deleted, _ = Student.objects.filter(id=student_id).delete()
-        if not deleted:
+        try:
+            student = Student.objects.get(id=student_id)
+        except Student.DoesNotExist:
             return ErrorResponse(status=404, message='Student not found')
+        if org_id and student.org_id != org_id:
+            return ErrorResponse(status=404, message='Student not found')
+        student.delete()
         return SuccessResponse(status=200, message='Student deleted')

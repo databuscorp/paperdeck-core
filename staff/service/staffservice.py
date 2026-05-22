@@ -1,4 +1,3 @@
-from courses.models import Course
 from staff.models import Staff
 from staff.processor.staffprocessor import StaffResponse
 from utility.dbservice import DBService
@@ -13,10 +12,10 @@ def _fmt_date(d):
     return d.strftime('%Y-%m-%d')
 
 
-def _build_staff_response(s: Staff, course_name: str = None) -> StaffResponse:
+def _build_staff_response(s: Staff) -> StaffResponse:
+    courses = list(s.courses.all())
     return StaffResponse(
         id=s.id,
-        course_id=s.course_id,
         name=s.name,
         email=s.email,
         phone=s.phone,
@@ -24,7 +23,25 @@ def _build_staff_response(s: Staff, course_name: str = None) -> StaffResponse:
         role=s.role,
         joined_date=_fmt_date(s.joined_date),
         created_at=s.created_at.isoformat(),
-        course_name=course_name,
+        user_id=s.user_id,
+        course_ids=[str(c.id) for c in courses],
+        course_names=[c.name for c in courses],
+    )
+
+
+def _create_user(email, password, name, org_id, role_const):
+    from users.models import User
+    if User.objects.filter(email=email).exists():
+        raise ValueError(f'A user with email {email} already exists')
+    name_parts = name.strip().split(' ', 1)
+    return User.objects.create_user(
+        username=email,
+        email=email,
+        password=password,
+        first_name=name_parts[0],
+        last_name=name_parts[1] if len(name_parts) > 1 else '',
+        org_id=org_id,
+        role=role_const,
     )
 
 
@@ -33,49 +50,61 @@ class StaffService(DBService):
         super().__init__(scope)
 
     def fetch_staff(self, course_id, org_id=None):
+        qs = Staff.objects.filter(courses__id=course_id).prefetch_related('courses')
         if org_id:
-            members = Staff.objects.filter(course_id=course_id, course__owner__org_id=org_id)
-        else:
-            members = Staff.objects.filter(course_id=course_id)
-        return [_build_staff_response(s) for s in members]
+            qs = qs.filter(org_id=org_id)
+        return [_build_staff_response(s) for s in qs.distinct()]
 
     def fetch_all_staff(self, user_id, org_id=None):
         if org_id:
-            members = Staff.objects.filter(course__owner__org_id=org_id).select_related('course').order_by('course__name', 'name')
+            qs = Staff.objects.filter(org_id=org_id)
         else:
-            members = Staff.objects.filter(course__owner_id=user_id).select_related('course').order_by('course__name', 'name')
-        return [_build_staff_response(s, course_name=s.course.name) for s in members]
+            qs = Staff.objects.filter(courses__created_by_id=user_id).distinct()
+        qs = qs.prefetch_related('courses').order_by('name')
+        return [_build_staff_response(s) for s in qs]
 
     def fetch_one_staff(self, staff_id, org_id=None):
         try:
-            if org_id:
-                s = Staff.objects.select_related('course').get(id=staff_id, course__owner__org_id=org_id)
-            else:
-                s = Staff.objects.select_related('course').get(id=staff_id)
-            return _build_staff_response(s, course_name=s.course.name)
+            s = Staff.objects.prefetch_related('courses').get(id=staff_id)
+            if org_id and s.org_id != org_id:
+                return ErrorResponse(status=404, message='Staff not found')
+            return _build_staff_response(s)
         except Staff.DoesNotExist:
             return ErrorResponse(status=404, message='Staff not found')
 
     def create_or_update_staff(self, req, org_id=None):
         if req.id is None:
-            if org_id and not Course.objects.filter(id=req.course_id, owner__org_id=org_id).exists():
-                return ErrorResponse(status=403, message='Course not found or access denied')
+            user = None
+            if req.email and req.password:
+                from users.models import User
+                try:
+                    user = _create_user(req.email, req.password, req.name, org_id, User.ROLE_STAFF)
+                except ValueError as e:
+                    return ErrorResponse(status=409, message=str(e))
+
             member = Staff.objects.create(
-                course_id=req.course_id,
+                org_id=org_id,
                 name=req.name,
                 email=req.email,
                 phone=req.phone,
                 subject=req.subject,
                 role=req.role,
                 joined_date=req.joined_date or None,
+                user=user,
             )
+            if req.course_ids:
+                if org_id:
+                    from courses.models import Course
+                    valid_ids = list(Course.objects.filter(id__in=req.course_ids, org_id=org_id).values_list('id', flat=True))
+                    member.courses.set(valid_ids)
+                else:
+                    member.courses.set(req.course_ids)
         else:
             try:
-                if org_id:
-                    member = Staff.objects.get(id=req.id, course__owner__org_id=org_id)
-                else:
-                    member = Staff.objects.get(id=req.id)
+                member = Staff.objects.prefetch_related('courses').get(id=req.id)
             except Staff.DoesNotExist:
+                return ErrorResponse(status=404, message='Staff not found')
+            if org_id and member.org_id != org_id:
                 return ErrorResponse(status=404, message='Staff not found')
             member.name = req.name
             member.email = req.email
@@ -84,13 +113,17 @@ class StaffService(DBService):
             member.role = req.role
             member.joined_date = req.joined_date or None
             member.save()
-        return _build_staff_response(member)
+            if req.course_ids is not None:
+                member.courses.set(req.course_ids)
+        member.refresh_from_db()
+        return _build_staff_response(Staff.objects.prefetch_related('courses').get(id=member.id))
 
     def delete_staff(self, staff_id, org_id=None):
-        if org_id:
-            deleted, _ = Staff.objects.filter(id=staff_id, course__owner__org_id=org_id).delete()
-        else:
-            deleted, _ = Staff.objects.filter(id=staff_id).delete()
-        if not deleted:
+        try:
+            member = Staff.objects.get(id=staff_id)
+        except Staff.DoesNotExist:
             return ErrorResponse(status=404, message='Staff not found')
+        if org_id and member.org_id != org_id:
+            return ErrorResponse(status=404, message='Staff not found')
+        member.delete()
         return SuccessResponse(status=200, message='Staff deleted')

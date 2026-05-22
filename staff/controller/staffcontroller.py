@@ -44,6 +44,11 @@ def _fetch_staff(request):
 
 def _post_staff(request):
     scope = request.scope
+    if scope.get('role') != 1:
+        return HttpResponse(
+            ErrorResponse(status=403, message='Admin access required').to_json(),
+            status=403, content_type='application/json'
+        )
     org_id = scope.get('org_id')
     obj = staff_req_schema.load(request.data)
     service = StaffService(scope)
@@ -55,6 +60,11 @@ def _post_staff(request):
 
 def _delete_staff(request):
     scope = request.scope
+    if scope.get('role') != 1:
+        return HttpResponse(
+            ErrorResponse(status=403, message='Admin access required').to_json(),
+            status=403, content_type='application/json'
+        )
     org_id = scope.get('org_id')
     staff_id = request.query_params.get('staff_id')
     if not staff_id:

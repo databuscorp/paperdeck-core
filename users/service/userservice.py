@@ -7,6 +7,13 @@ from users.processor.userprocessor import UserResponse, AuthResponse
 from utility.utilityobj import ErrorResponse, SuccessResponse
 
 
+_ROLE_NAMES = {
+    User.ROLE_ADMIN:   'admin',
+    User.ROLE_STAFF:   'staff',
+    User.ROLE_STUDENT: 'student',
+}
+
+
 def _build_user_response(user: User) -> UserResponse:
     return UserResponse(
         id=user.id,
@@ -17,6 +24,7 @@ def _build_user_response(user: User) -> UserResponse:
         institute_name=user.institute_name,
         phone=user.phone,
         role=user.role,
+        role_name=_ROLE_NAMES.get(user.role, 'staff'),
         plan=user.plan,
         papers_used=user.papers_used,
         org_id=user.org_id,

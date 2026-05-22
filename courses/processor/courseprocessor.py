@@ -8,13 +8,16 @@ from dataclasses_json import dataclass_json
 @dataclass
 class CourseRequest:
     name: str
-    category: str
+    course_type: Optional[str] = 'common'
     description: Optional[str] = None
-    status: Optional[str] = 'active'
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-    duration: Optional[str] = None
-    id: Optional[int] = None
+    grade_level: Optional[str] = None
+    duration_minutes: Optional[int] = 0
+    total_marks: Optional[int] = 0
+    instructions: Optional[str] = None
+    is_active: Optional[bool] = True
+    authority_id: Optional[str] = None
+    slug: Optional[str] = None
+    id: Optional[str] = None
 
 
 course_req_schema = marshmallow_dataclass.class_schema(CourseRequest)()
@@ -23,15 +26,23 @@ course_req_schema = marshmallow_dataclass.class_schema(CourseRequest)()
 @dataclass_json
 @dataclass
 class CourseResponse:
-    id: int
+    id: str
     name: str
-    category: str
+    slug: str
+    course_type: str
     description: Optional[str]
-    status: str
-    start_date: Optional[str]
-    end_date: Optional[str]
-    duration: Optional[str]
+    grade_level: Optional[str]
+    duration_minutes: int
+    total_marks: int
+    instructions: Optional[str]
+    is_active: bool
+    is_sys: bool
+    authority_id: Optional[str]
+    authority_name: Optional[str]
+    authority_short_name: Optional[str]
     created_at: str
+    updated_at: str
     staff_count: int = 0
     student_count: int = 0
     subject_count: int = 0
+    is_subscribed: bool = False

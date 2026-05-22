@@ -44,6 +44,11 @@ def _fetch_students(request):
 
 def _post_student(request):
     scope = request.scope
+    if scope.get('role') != 1:
+        return HttpResponse(
+            ErrorResponse(status=403, message='Admin access required').to_json(),
+            status=403, content_type='application/json'
+        )
     org_id = scope.get('org_id')
     obj = student_req_schema.load(request.data)
     service = StudentService(scope)
@@ -55,6 +60,11 @@ def _post_student(request):
 
 def _delete_student(request):
     scope = request.scope
+    if scope.get('role') != 1:
+        return HttpResponse(
+            ErrorResponse(status=403, message='Admin access required').to_json(),
+            status=403, content_type='application/json'
+        )
     org_id = scope.get('org_id')
     student_id = request.query_params.get('student_id')
     if not student_id:

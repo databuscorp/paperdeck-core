@@ -29,13 +29,14 @@ def _fetch(request):
     scope = request.scope
     org_id = scope.get('org_id')
     question_id = request.query_params.get('question_id')
+    course_id = request.query_params.get('course_id')
     service = QuestionService(scope)
     if question_id:
         resp = service.fetch_one(question_id, scope['user_id'], org_id=org_id)
         if isinstance(resp, ErrorResponse):
             return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
         return HttpResponse(resp.to_json(), content_type='application/json')
-    resp_list = service.fetch_all(scope['user_id'], org_id=org_id)
+    resp_list = service.fetch_all(scope['user_id'], org_id=org_id, course_id=course_id)
     return HttpResponse(json.dumps([q.to_dict() for q in resp_list]), content_type='application/json')
 
 
@@ -77,12 +78,43 @@ def generate_questions(request):
             ErrorResponse(status=400, message=str(e)).to_json(),
             status=400, content_type='application/json'
         )
+
+    # Resolve exam/subject/topic display strings from DB when FK IDs are provided
+    exam = obj.exam or ''
+    subject = obj.subject or ''
+    topic = obj.topic or ''
+
+    if obj.course_id:
+        try:
+            from courses.models import Course
+            course = Course.objects.select_related('authority').get(id=obj.course_id)
+            if course.authority:
+                exam = course.authority.name
+        except Exception:
+            pass
+
+    if obj.subject_id:
+        try:
+            from subjects.models import Subject
+            subj = Subject.objects.get(id=obj.subject_id)
+            subject = subj.name
+        except Exception:
+            pass
+
+    if obj.topic_id:
+        try:
+            from subjects.models import Topic
+            t = Topic.objects.get(id=obj.topic_id)
+            topic = t.name
+        except Exception:
+            pass
+
     try:
         generator = AIGeneratorService()
         questions = generator.generate_questions(
-            exam=obj.exam,
-            subject=obj.subject,
-            topic=obj.topic or '',
+            exam=exam,
+            subject=subject,
+            topic=topic or '',
             q_type=obj.q_type,
             difficulty=obj.difficulty,
             bloom=obj.bloom,

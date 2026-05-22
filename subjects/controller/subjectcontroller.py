@@ -5,7 +5,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
 from rest_framework.decorators import api_view
 
-from subjects.processor.subjectprocessor import subject_req_schema
+from subjects.processor.subjectprocessor import subject_req_schema, topic_req_schema, chapter_req_schema
 from subjects.service.subjectservice import SubjectService
 from utility.decorator.auth import auth_required
 from utility.utilityobj import ErrorResponse
@@ -48,10 +48,11 @@ def _fetch_subjects(request):
 
 def _post_subject(request):
     scope = request.scope
+    user_id = scope['user_id']
     org_id = scope.get('org_id')
     obj = subject_req_schema.load(request.data)
     service = SubjectService(scope)
-    resp = service.create_or_update_subject(obj, org_id=org_id)
+    resp = service.create_or_update_subject(obj, user_id=user_id, org_id=org_id)
     if isinstance(resp, ErrorResponse):
         return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
     return HttpResponse(resp.to_json(), content_type='application/json')
@@ -59,6 +60,7 @@ def _post_subject(request):
 
 def _delete_subject(request):
     scope = request.scope
+    user_id = scope['user_id']
     org_id = scope.get('org_id')
     subject_id = request.query_params.get('subject_id')
     if not subject_id:
@@ -67,7 +69,7 @@ def _delete_subject(request):
             status=400, content_type='application/json'
         )
     service = SubjectService(scope)
-    resp = service.delete_subject(subject_id, org_id=org_id)
+    resp = service.delete_subject(subject_id, user_id=user_id, org_id=org_id)
     if isinstance(resp, ErrorResponse):
         return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
     return HttpResponse(resp.to_json(), content_type='application/json')
@@ -127,6 +129,98 @@ def _delete_syllabus(request):
         )
     service = SubjectService(scope)
     resp = service.delete_syllabus(syllabus_id, org_id=org_id)
+    if isinstance(resp, ErrorResponse):
+        return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
+    return HttpResponse(resp.to_json(), content_type='application/json')
+
+
+@csrf_exempt
+@api_view(['GET', 'POST', 'DELETE'])
+@auth_required
+@transaction.atomic
+def topic(request):
+    if request.method == 'GET':
+        return _fetch_topics(request)
+    elif request.method == 'POST':
+        return _post_topic(request)
+    elif request.method == 'DELETE':
+        return _delete_topic(request)
+
+
+def _fetch_topics(request):
+    scope = request.scope
+    org_id = scope.get('org_id')
+    subject_id = request.query_params.get('subject_id')
+    if not subject_id:
+        return HttpResponse(
+            ErrorResponse(status=400, message='subject_id is required').to_json(),
+            status=400, content_type='application/json'
+        )
+    service = SubjectService(scope)
+    topics = service.fetch_topics(subject_id, org_id=org_id)
+    return HttpResponse(json.dumps([t.to_dict() for t in topics]), content_type='application/json')
+
+
+def _post_topic(request):
+    scope = request.scope
+    org_id = scope.get('org_id')
+    obj = topic_req_schema.load(request.data)
+    service = SubjectService(scope)
+    resp = service.create_or_update_topic(obj, org_id=org_id)
+    if isinstance(resp, ErrorResponse):
+        return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
+    return HttpResponse(resp.to_json(), content_type='application/json')
+
+
+def _delete_topic(request):
+    scope = request.scope
+    org_id = scope.get('org_id')
+    topic_id = request.query_params.get('topic_id')
+    if not topic_id:
+        return HttpResponse(
+            ErrorResponse(status=400, message='topic_id is required').to_json(),
+            status=400, content_type='application/json'
+        )
+    service = SubjectService(scope)
+    resp = service.delete_topic(topic_id, org_id=org_id)
+    if isinstance(resp, ErrorResponse):
+        return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
+    return HttpResponse(resp.to_json(), content_type='application/json')
+
+
+@csrf_exempt
+@api_view(['POST', 'DELETE'])
+@auth_required
+@transaction.atomic
+def chapter(request):
+    if request.method == 'POST':
+        return _post_chapter(request)
+    elif request.method == 'DELETE':
+        return _delete_chapter(request)
+
+
+def _post_chapter(request):
+    scope = request.scope
+    org_id = scope.get('org_id')
+    obj = chapter_req_schema.load(request.data)
+    service = SubjectService(scope)
+    resp = service.create_or_update_chapter(obj, org_id=org_id)
+    if isinstance(resp, ErrorResponse):
+        return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
+    return HttpResponse(resp.to_json(), content_type='application/json')
+
+
+def _delete_chapter(request):
+    scope = request.scope
+    org_id = scope.get('org_id')
+    chapter_id = request.query_params.get('chapter_id')
+    if not chapter_id:
+        return HttpResponse(
+            ErrorResponse(status=400, message='chapter_id is required').to_json(),
+            status=400, content_type='application/json'
+        )
+    service = SubjectService(scope)
+    resp = service.delete_chapter(chapter_id, org_id=org_id)
     if isinstance(resp, ErrorResponse):
         return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
     return HttpResponse(resp.to_json(), content_type='application/json')
