@@ -8,3 +8,6 @@ media/
 dist/
 .DS_Store
 /.idea
+.env
+.env.local
+.env
