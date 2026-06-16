@@ -3,10 +3,28 @@ djangorestframework==3.15.2
 djangorestframework-simplejwt==5.3.1
 django-cors-headers==4.6.0
 python-dotenv==1.0.1
-psycopg2-binary==2.9.11  # optional: only needed for PostgreSQL
+psycopg2-binary==2.9.11
 dataclasses-json==0.6.7
 marshmallow-dataclass==8.7.1
 dacite==1.8.1
 anthropic==0.40.0
 Pillow==11.1.0
 gunicorn==23.0.0
+
+# ── STEM Diagram Engine ────────────────────────────────────────────────────────
+pydantic>=2.5.0,<3.0
+svgwrite>=1.4.3
+matplotlib>=3.8.0
+numpy>=1.26.0
+sympy>=1.12
+reportlab>=4.1.0
+
+# Optional – significantly improves PNG export quality
+# cairosvg>=2.7.0   # requires system libs: libcairo2 (apt) / cairo (brew)
+
+# Optional – circuit diagrams (schemdraw requires matplotlib)
+schemdraw>=0.18
+
+# Optional – organic chemistry structure rendering
+# rdkit-pypi>=2022.9.5   # use: pip install rdkit-pypi
+#                        # OR via conda: conda install -c conda-forge rdkit

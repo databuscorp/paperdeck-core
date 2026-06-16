@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  # ── Django API ─────────────────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: paperdeck_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - media_vol:/app/media
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - ALLOWED_HOSTS=localhost,127.0.0.1,api.paperdeck.databus.co
+      - USE_POSTGRES=True
+      - DB_NAME=paperdeck
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_HOST=db
+      - DB_PORT=5432
+      - CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+    restart: unless-stopped
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: paperdeck_db
+    environment:
+      - POSTGRES_DB=paperdeck
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  media_vol:

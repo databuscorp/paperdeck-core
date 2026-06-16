@@ -27,6 +27,8 @@ class QuestionRequest:
     image_svg:   Optional[str] = None
     source:      Optional[str] = 'manual'
     id:          Optional[int] = None
+    # has_latex is computed server-side; clients may send it but it is re-computed on every save
+    has_latex:   Optional[bool] = None
 
 
 question_req_schema = marshmallow_dataclass.class_schema(QuestionRequest)(unknown=EXCLUDE)
@@ -75,3 +77,5 @@ class QuestionResponse:
     options:     Optional[Any]
     explanation: Optional[str]
     image_svg:   Optional[str]
+    # LaTeX flag — True when text/options contain $...$ math notation
+    has_latex:   bool = False

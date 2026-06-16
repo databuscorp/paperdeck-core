@@ -1,12 +1,156 @@
 import json
+import logging
 import os
+import re
 import time
 
 import anthropic
 
+logger = logging.getLogger(__name__)
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 SONNET_MODEL = "claude-sonnet-4-6"
+
+
+# Matches a real JSON escape (``\\`` pair, ``\"``, ``\/`` or ``\uXXXX``) OR a
+# single backslash. The ``\\\\`` alternative is first so already-escaped pairs
+# are consumed as a unit and left intact.
+_JSON_ESCAPE_RE = re.compile(r'\\\\|\\"|\\/|\\u[0-9a-fA-F]{4}|\\')
+
+
+def _loads_lenient(raw: str):
+    """Parse model JSON, fixing LaTeX backslashes that JSON would mis-handle.
+
+    The model is asked to emit LaTeX such as ``$\\frac{a}{b}$`` with single
+    backslashes. Those break JSON in two different ways:
+
+    * ``\\c \\s \\a \\m \\p`` …  → ``json.loads`` raises ``Invalid \\escape``.
+    * ``\\t \\f \\n \\r \\b``   → ``json.loads`` *silently* parses them to
+      tab / form-feed / newline etc. and corrupts ``\\text``, ``\\frac``,
+      ``\\nabla`` …  (no error, just mangled output).
+
+    Because of the second case we can't simply try a strict parse first — we
+    always rewrite escapes, keeping only the genuine JSON ones (``\\\\``,
+    ``\\"``, ``\\/`` and ``\\uXXXX``) and turning every other backslash into a
+    literal ``\\\\`` so the LaTeX survives intact. The ``\\\\`` alternative in the
+    regex consumes already-escaped pairs as a unit, so correctly-escaped input
+    is left unchanged.
+    """
+    sanitized = _JSON_ESCAPE_RE.sub(lambda m: m.group(0) if m.group(0) != "\\" else "\\\\", raw)
+    return json.loads(sanitized)
+
+# ── LaTeX math notation hint ──────────────────────────────────────────────────
+# Injected into every question-generation prompt so the AI consistently
+# uses $...$ delimiters that the LaTeX rendering pipeline can parse.
+_LATEX_MATH_HINT = """
+IMPORTANT — Mathematical Notation Rules:
+Use LaTeX math notation for ALL mathematical expressions:
+  Inline math  →  wrap with $...$         e.g. "A block of mass $m = 2\\text{ kg}$"
+  Display math →  wrap with $$...$$       e.g. "$$\\int_0^{\\pi} \\sin x\\, dx = 2$$"
+
+Common patterns:
+  Fractions:       $\\frac{a}{b}$
+  Powers:          $x^2$, $e^{-kt}$
+  Subscripts:      $x_1$, $v_0$
+  Greek letters:   $\\alpha$, $\\beta$, $\\theta$, $\\omega$, $\\Delta$, $\\lambda$
+  Vectors:         $\\vec{F}$, $\\hat{n}$
+  Derivatives:     $\\frac{d}{dx}$, $\\frac{dy}{dt}$
+  Integrals:       $\\int_a^b f(x)\\,dx$
+  Square roots:    $\\sqrt{2}$, $\\sqrt[3]{x}$
+  Trigonometry:    $\\sin\\theta$, $\\cos\\frac{\\pi}{3}$, $\\tan^{-1}$
+  Units (inline):  $10\\text{ m/s}$, $9.8\\text{ m/s}^2$
+  Equations:       $F = ma$, $E = mc^2$, $PV = nRT$
+  Limits:          $\\lim_{x \\to 0}$
+  Summation:       $\\sum_{n=1}^{\\infty}$
+
+Chemical formulas use plain Unicode (not LaTeX): H₂O, CO₂, H₂SO₄, CaCO₃
+Do NOT use LaTeX for purely textual content.
+"""
+
+# ── Diagram schema hint injected into the AI prompt ───────────────────────────
+# Tells the AI exactly what schemas are valid so it picks the right one.
+_DIAGRAM_SCHEMA_HINT = """
+SUPPORTED diagram_schema values (pick the ONE that best fits the question):
+
+Physics:
+  {"diagram_type":"physics","subtype":"inclined_plane","params":{"angle":<deg 1-89>,"forces":["mg","N","f"],"block_label":"m"}}
+  {"diagram_type":"physics","subtype":"free_body_diagram","params":{"object":{"shape":"square","label":"m"},"forces":[{"label":"mg","direction_deg":270},{"label":"N","direction_deg":90}]}}
+  {"diagram_type":"physics","subtype":"pulley_system","params":{"pulley_count":1,"masses":[{"label":"m₁"},{"label":"m₂"}]}}
+  {"diagram_type":"physics","subtype":"projectile_motion","params":{"initial_velocity":20,"launch_angle":45,"show_components":true}}
+  {"diagram_type":"physics","subtype":"spring_block","params":{"orientation":"horizontal","block_label":"m","spring_label":"k"}}
+  {"diagram_type":"physics","subtype":"optics_convex_lens","params":{"focal_length":100,"show_rays":true}}
+  {"diagram_type":"physics","subtype":"optics_concave_mirror","params":{"focal_length":110,"show_rays":true}}
+  {"diagram_type":"physics","subtype":"wave_diagram","params":{"amplitude":80,"num_cycles":2.5}}
+  {"diagram_type":"physics","subtype":"thermodynamics_pv","params":{"states":[{"label":"A","volume":2,"pressure":5},{"label":"B","volume":4,"pressure":5},{"label":"C","volume":4,"pressure":2}],"processes":[{"from_state":"A","to_state":"B","process_type":"isobaric"},{"from_state":"B","to_state":"C","process_type":"isochoric"}],"title":"P-V Diagram"}}
+  {"diagram_type":"physics","subtype":"ray_optics_prism","params":{"prism_angle":60,"incident_angle":45,"refractive_index":1.5,"show_normals":true,"show_angles":true,"label_deviation":true}}
+  {"diagram_type":"physics","subtype":"electric_field_lines","params":{"field_type":"point_charges","charges":[{"x":-1,"y":0,"charge":1,"label":"+q"},{"x":1,"y":0,"charge":-1,"label":"-q"}],"num_lines":8}}
+  {"diagram_type":"physics","subtype":"magnetic_field_lines","params":{"source_type":"bar_magnet","label_poles":true,"num_field_lines":8}}
+  {"diagram_type":"physics","subtype":"circular_motion","params":{"show_velocity":true,"show_centripetal":true,"radius_label":"r","mass_label":"m","velocity_label":"v","centripetal_label":"F_c","object_angle_deg":45}}
+
+Chemistry:
+  {"diagram_type":"chemistry","subtype":"organic_structure","params":{"smiles":"<SMILES string>","name":"<compound name>"}}
+  {"diagram_type":"chemistry","subtype":"organic_structure","params":{"smiles":"CC(=O)Oc1ccccc1","name":"Aspirin","show_eas_positions":true,"activated_positions":["ortho","para"]}}
+  {"diagram_type":"chemistry","subtype":"inorganic_structure","params":{"atoms":[{"symbol":"O"},{"symbol":"H"},{"symbol":"H"}],"bonds":[{"from_atom":0,"to_atom":1,"bond_type":"single"},{"from_atom":0,"to_atom":2,"bond_type":"single"}],"title":"<name>"}}
+  {"diagram_type":"chemistry","subtype":"reaction_coordinate_graph","params":{"reactant_energy":0,"product_energy":-40,"activation_energy":80}}
+  {"diagram_type":"chemistry","subtype":"orbital_diagram","params":{"element":"Carbon","electron_config":[{"shell":"1s","electrons":2,"max_electrons":2,"sublevel_count":1},{"shell":"2s","electrons":2,"max_electrons":2,"sublevel_count":1},{"shell":"2p","electrons":2,"max_electrons":6,"sublevel_count":3}]}}
+  {"diagram_type":"chemistry","subtype":"electrochemical_cell","params":{"anode_material":"Zn","anode_ion":"Zn²⁺","anode_solution":"ZnSO₄","cathode_material":"Cu","cathode_ion":"Cu²⁺","cathode_solution":"CuSO₄","cell_name":"Daniell Cell","emf":1.10,"show_half_reactions":true}}
+  {"diagram_type":"chemistry","subtype":"equilibrium_graph","params":{"reactant_labels":["[A]","[B]"],"product_labels":["[C]"],"equilibrium_time":0.5,"show_kc_marker":true,"title":"Equilibrium Concentration vs Time"}}
+  {"diagram_type":"chemistry","subtype":"titration_curve","params":{"acid_type":"strong","base_type":"strong","initial_ph":1.0,"equivalence_ph":7.0,"final_ph":13.0,"titrant_label":"NaOH","analyte_label":"HCl","show_equivalence_point":true}}
+
+Mathematics:
+  {"diagram_type":"mathematics","subtype":"function_graph","params":{"functions":[{"expression":"<sympy expr>","label":"<label>","x_range":[-5,5],"line_style":"solid"},{"expression":"<sympy expr2>","label":"<label2>","x_range":[-5,5],"line_style":"dashed"}],"x_range":[-5,5],"show_intersections":true,"intersection_labels":true}}
+  {"diagram_type":"mathematics","subtype":"geometry_triangle","params":{"vertices":[{"label":"A","x":0,"y":0},{"label":"B","x":4,"y":0},{"label":"C","x":2,"y":3}],"angles":[60,60,60]}}
+  {"diagram_type":"mathematics","subtype":"geometry_circle","params":{"show_radius":true,"arc_angle":90}}
+  {"diagram_type":"mathematics","subtype":"calculus_graph","params":{"function":"<sympy expr>","x_range":[-4,4],"shaded_regions":[{"x_from":<a>,"x_to":<b>,"label":"A"}]}}
+  {"diagram_type":"mathematics","subtype":"coordinate_geometry","params":{"lines":[{"slope":<m>,"intercept":<b>,"label":"<eq>"}],"points":[{"x":<x>,"y":<y>,"label":"<lbl>"}]}}
+  {"diagram_type":"mathematics","subtype":"conic_section","params":{"conic_type":"ellipse","a":5,"b":3,"orientation":"horizontal","show_foci":true,"show_vertices":true,"title":"Ellipse"}}
+  {"diagram_type":"mathematics","subtype":"conic_section","params":{"conic_type":"parabola","a":2,"orientation":"horizontal","show_foci":true,"show_directrix":true,"title":"Parabola y²=8x"}}
+  {"diagram_type":"mathematics","subtype":"conic_section","params":{"conic_type":"hyperbola","a":3,"b":4,"orientation":"horizontal","show_foci":true,"show_asymptotes":true,"title":"Hyperbola"}}
+  {"diagram_type":"mathematics","subtype":"venn_diagram","params":{"sets":[{"label":"A","region_value":"3"},{"label":"B","region_value":"5"}],"intersection_labels":["2"],"universal_set_label":"U","title":"Venn Diagram"}}
+  {"diagram_type":"mathematics","subtype":"number_line","params":{"x_min":-3,"x_max":5,"points":[{"value":2,"label":"2","filled":true}],"intervals":[{"start":-1,"end":3,"filled_start":false,"filled_end":true}],"title":"Solution set"}}
+
+Biology (NEET):
+  {"diagram_type":"biology","subtype":"cell_diagram","params":{"cell_type":"animal","labeled":true,"highlight_organelle":"mitochondria"}}
+  {"diagram_type":"biology","subtype":"cell_diagram","params":{"cell_type":"plant","labeled":true,"show_chloroplast":true,"show_cell_wall":true,"show_vacuole":true}}
+  {"diagram_type":"biology","subtype":"dna_structure","params":{"structure_type":"double_helix","num_base_pairs":10,"show_base_labels":true,"show_labels":true}}
+  {"diagram_type":"biology","subtype":"dna_structure","params":{"structure_type":"replication_fork","num_base_pairs":10,"show_labels":true}}
+  {"diagram_type":"biology","subtype":"cell_division","params":{"division_type":"mitosis","stage":"metaphase","num_chromosome_pairs":2,"show_spindle":true,"show_labels":true}}
+  {"diagram_type":"biology","subtype":"cell_division","params":{"division_type":"meiosis","stage":"metaphase_1","num_chromosome_pairs":2,"show_labels":true}}
+  {"diagram_type":"biology","subtype":"cell_division","params":{"division_type":"meiosis","stage":"prophase_1","num_chromosome_pairs":2,"show_labels":true}}
+  {"diagram_type":"biology","subtype":"heart_diagram","params":{"show_labels":true,"show_blood_flow":true,"show_valves":true}}
+  {"diagram_type":"biology","subtype":"nephron_diagram","params":{"show_labels":true,"show_blood_vessels":true,"highlight_region":"loop_of_henle"}}
+  {"diagram_type":"biology","subtype":"neuron_diagram","params":{"neuron_type":"myelinated","show_labels":true,"show_impulse_direction":true}}
+  {"diagram_type":"biology","subtype":"food_web","params":{"nodes":[{"id":"grass","label":"Grass","trophic_level":1},{"id":"rabbit","label":"Rabbit","trophic_level":2},{"id":"fox","label":"Fox","trophic_level":3},{"id":"eagle","label":"Eagle","trophic_level":4}],"edges":[{"from_id":"grass","to_id":"rabbit"},{"from_id":"rabbit","to_id":"fox"},{"from_id":"fox","to_id":"eagle"}],"title":"Grassland Food Web"}}
+  {"diagram_type":"biology","subtype":"food_chain","params":{"organisms":["Grass","Grasshopper","Frog","Snake","Eagle"],"title":"Grassland Food Chain"}}
+  {"diagram_type":"biology","subtype":"ecological_pyramid","params":{"pyramid_type":"biomass","levels":[{"label":"Producers","value":10000,"unit":"kg"},{"label":"Herbivores","value":1000,"unit":"kg"},{"label":"Carnivores","value":100,"unit":"kg"},{"label":"Top Carnivores","value":10,"unit":"kg"}]}}
+
+Circuits:
+  {"diagram_type":"circuits","subtype":"resistor_network","params":{"topology":"series","resistors":["R₁=<val>Ω","R₂=<val>Ω"],"voltage_source":"<V>V"}}
+  {"diagram_type":"circuits","subtype":"capacitor_network","params":{"topology":"parallel","capacitors":["C₁=<val>μF","C₂=<val>μF"]}}
+  {"diagram_type":"circuits","subtype":"basic_dc_circuit","params":{"components":[{"type":"battery","value":"<V>V","direction":"up"},{"type":"resistor","label":"R","value":"<val>Ω","direction":"right"}]}}
+
+Physics (advanced):
+  {"diagram_type":"physics","subtype":"doppler_effect","params":{"source_velocity":0.6,"direction":"right","observer_side":"right","num_wavefronts":8,"show_frequency_labels":true,"title":"Doppler Effect: Moving Source"}}
+  {"diagram_type":"physics","subtype":"interference_pattern","params":{"pattern_type":"double_slit","slit_separation":2.5,"wavelength":550,"num_maxima":5,"show_intensity_curve":true,"title":"Young's Double Slit"}}
+  {"diagram_type":"physics","subtype":"interference_pattern","params":{"pattern_type":"single_slit","wavelength":600,"num_maxima":3,"show_intensity_curve":true,"title":"Single Slit Diffraction"}}
+  {"diagram_type":"physics","subtype":"bohr_atom","params":{"element":"H","num_shells":5,"transitions":[{"from_shell":3,"to_shell":1,"label":"Lyman α","color":"purple"},{"from_shell":3,"to_shell":2,"label":"Hα","color":"red"}],"title":"Hydrogen Bohr Model"}}
+  {"diagram_type":"physics","subtype":"bohr_atom","params":{"element":"Na","num_shells":3,"electrons_per_shell":[2,8,1],"title":"Sodium Atom"}}
+  {"diagram_type":"physics","subtype":"capacitor_dielectric","params":{"dielectric_label":"Glass (ε_r = 6)","num_field_lines":8,"show_induced_charges":true,"voltage_label":"V","title":"Capacitor with Glass Dielectric"}}
+  {"diagram_type":"physics","subtype":"lc_oscillation","params":{"inductance_label":"L","capacitance_label":"C","show_circuit":true,"show_graphs":true,"num_cycles":2,"initial_state":"charged","title":"LC Oscillation"}}
+
+Chemistry (advanced):
+  {"diagram_type":"chemistry","subtype":"sn1_sn2_mechanism","params":{"mechanism_type":"sn2","substrate":"CH₃Br","nucleophile":"OH⁻","leaving_group":"Br⁻","product":"CH₃OH","show_curved_arrows":true,"show_stereochemistry":true,"title":"SN2 Mechanism"}}
+  {"diagram_type":"chemistry","subtype":"sn1_sn2_mechanism","params":{"mechanism_type":"sn1","substrate":"(CH₃)₃CBr","nucleophile":"H₂O","leaving_group":"Br⁻","product":"(CH₃)₃COH","intermediate":"(CH₃)₃C⁺","title":"SN1 Mechanism"}}
+  {"diagram_type":"chemistry","subtype":"newman_projection","params":{"front_carbon":"C1","back_carbon":"C2","front_substituents":["H","CH₃","H"],"back_substituents":["H","H","CH₃"],"dihedral_angle":180,"conformation_label":"Anti","title":"Newman Projection (Anti)"}}
+  {"diagram_type":"chemistry","subtype":"conformational_isomers","params":{"molecule_type":"cyclohexane","conformations":["chair","boat"],"show_axial_equatorial":true,"title":"Cyclohexane Conformations"}}
+  {"diagram_type":"chemistry","subtype":"conformational_isomers","params":{"molecule_type":"ethane","conformations":["staggered","eclipsed"],"title":"Ethane Conformations"}}
+
+Mathematics (advanced):
+  {"diagram_type":"mathematics","subtype":"bar_chart","params":{"bars":[{"label":"Jan","value":120},{"label":"Feb","value":95},{"label":"Mar","value":145},{"label":"Apr","value":110}],"x_label":"Month","y_label":"Frequency","show_values":true,"title":"Monthly Distribution"}}
+  {"diagram_type":"mathematics","subtype":"scatter_plot","params":{"points":[{"x":1,"y":2.1},{"x":2,"y":3.9},{"x":3,"y":6.2},{"x":4,"y":7.8},{"x":5,"y":10.1}],"show_regression_line":true,"show_r_squared":true,"x_label":"Time (s)","y_label":"Distance (m)","title":"Distance vs Time"}}
+  {"diagram_type":"mathematics","subtype":"vector_3d","params":{"vectors":[{"x":2,"y":0,"z":0,"label":"i","color":"red"},{"x":0,"y":2,"z":0,"label":"j","color":"green"},{"x":0,"y":0,"z":2,"label":"k","color":"blue"}],"show_axes":true,"title":"Unit Vectors"}}
+  {"diagram_type":"mathematics","subtype":"vector_3d","params":{"vectors":[{"x":3,"y":4,"z":5,"label":"F","color":"purple"}],"show_projections":true,"show_angle_between":false,"title":"Force Vector in 3D"}}
+"""
 
 EXAM_CONFIGS = {
     "NEET": {
@@ -105,7 +249,7 @@ class AIGeneratorService:
             messages=[{"role": "user", "content": prompt}]
         )
         content = message.content[0].text
-        paper_data = json.loads(content)
+        paper_data = _loads_lenient(content)
 
         flagged_sections = self._flag_risky_sections(paper_data)
         if flagged_sections:
@@ -130,7 +274,7 @@ class AIGeneratorService:
                     max_tokens=4096,
                     messages=[{"role": "user", "content": prompt}]
                 )
-                corrected = json.loads(message.content[0].text)
+                corrected = _loads_lenient(message.content[0].text)
                 paper_data["sections"][i] = corrected
         return paper_data
 
@@ -171,18 +315,21 @@ class AIGeneratorService:
         else:
             options_instruction = '"options": null,'
 
-        # SVG is generated in a separate call to avoid JSON corruption — only include description here
-        image_field = (
-            '"image_description": "One-line label for the diagram (e.g. Ray diagram of a concave lens).",'
-            if is_image_based else
-            '"image_description": null,'
-        )
+        # For image-based questions, AI produces a diagram_schema — NOT raw SVG.
+        # The deterministic rendering engine converts this to SVG after generation.
+        if is_image_based:
+            image_field = '"diagram_schema": { /* pick ONE schema from the supported list below */ },'
+            diagram_hint = _DIAGRAM_SCHEMA_HINT
+        else:
+            image_field = '"diagram_schema": null,'
+            diagram_hint = ""
 
         diff_instruction = "" if difficulty == "Mixed" else f"Difficulty: {difficulty}."
         bloom_instruction = "" if bloom == "Mixed" else f"Bloom's level: {bloom}."
         type_note = (
-            "These are diagram/figure-based MCQs. Each question must reference a specific diagram. "
-            "Write the question text as if the student is looking at the described figure."
+            "These are diagram/figure-based MCQs. Each question MUST include a diagram_schema "
+            "that precisely describes the diagram the student is looking at. "
+            "Choose the diagram type that best matches the question's physics/chemistry/math content."
             if is_image_based else ""
         )
 
@@ -191,6 +338,8 @@ Subject: {subject}
 Topic: {topic or 'General'}
 {diff_instruction} {bloom_instruction}
 {type_note}
+{_LATEX_MATH_HINT}
+{diagram_hint}
 
 Return ONLY a valid JSON array with no markdown or extra text. Each element:
 {{
@@ -201,13 +350,14 @@ Return ONLY a valid JSON array with no markdown or extra text. Each element:
   "difficulty": "Easy|Medium|Hard|HOTS",
   "bloom": "Remember|Understand|Apply|Analyze|Evaluate|Create",
   "marks": 4,
-  "text": "Question text here",
+  "text": "Question text with LaTeX math e.g. 'A body of mass $m = 2\\\\text{{ kg}}$ accelerates at $a = 5\\\\text{{ m/s}}^2$.'",
   {image_field}
   {options_instruction}
   "explanation": "One sentence explanation"
 }}
 
-Return exactly {count} questions as a JSON array. Keep explanations concise (one sentence)."""
+Return exactly {count} questions as a JSON array. Keep explanations concise (one sentence).
+For diagram_schema, fill in real numeric values that make sense for the question topic — do not use placeholders."""
 
         try:
             message = self._client.messages.create(
@@ -217,18 +367,17 @@ Return exactly {count} questions as a JSON array. Keep explanations concise (one
             )
             questions = self._parse_questions_response(message.content[0].text.strip())
 
-            # Generate SVG diagrams in a separate plain-text call to avoid JSON corruption
+            # Render diagram schemas deterministically — no AI image generation
             if is_image_based:
                 for q in questions:
-                    try:
-                        time.sleep(2)  # brief gap to stay under rate limit
-                        q['image_svg'] = self._generate_svg(
-                            q.get('text', ''),
-                            q.get('image_description', ''),
-                            subject,
-                        )
-                    except Exception:
-                        q['image_svg'] = None
+                    q['image_svg'] = self._render_diagram_schema(
+                        q.get('diagram_schema'),
+                        fallback_text=q.get('text', ''),
+                        subject=subject,
+                    )
+
+            # Tag questions that contain LaTeX math notation
+            self._tag_latex(questions)
 
             return questions
         except anthropic.RateLimitError:
@@ -242,43 +391,56 @@ Return exactly {count} questions as a JSON array. Keep explanations concise (one
                 raise RuntimeError("AI service is currently overloaded. Please wait a moment and try again.") from e
             raise
 
-    def _generate_svg(self, question_text: str, image_description: str, subject: str) -> str:
-        prompt = f"""Draw a simple scientific diagram as SVG for this {subject} question.
+    @staticmethod
+    def _render_diagram_schema(schema: dict, fallback_text: str = "", subject: str = "") -> str | None:
+        """
+        Render an AI-generated diagram_schema using the deterministic STEM rendering engine.
+        Returns SVG string on success, None on failure (caller stores null in image_svg).
+        Never calls AI for SVG generation — geometry is always computed programmatically.
+        """
+        if not schema or not isinstance(schema, dict):
+            return None
 
-Question: {question_text}
-Diagram: {image_description or 'A relevant scientific figure'}
+        try:
+            from diagrams.service.dispatcher import dispatch_render
+            # save_files=True — saves SVG/PNG to media/ so frontend can reference by URL.
+            # Falls back gracefully if file system is unavailable.
+            _, result = dispatch_render(schema, save_files=True)
+            if result.success:
+                logger.debug(
+                    "STEM render OK: %s/%s in %dms",
+                    schema.get("diagram_type"), schema.get("subtype"), result.render_time_ms,
+                )
+                return result.svg_content
+            else:
+                logger.warning(
+                    "STEM render failed for %s/%s: %s",
+                    schema.get("diagram_type"), schema.get("subtype"), result.error[:200],
+                )
+                return None
+        except Exception as exc:
+            logger.exception("Unexpected error in STEM renderer: %s", exc)
+            return None
 
-Rules:
-- Return ONLY the SVG markup, nothing else — no markdown, no explanation
-- The opening tag MUST be exactly: <svg width="400" height="280" viewBox="0 0 400 280" xmlns="http://www.w3.org/2000/svg">
-- End with </svg>
-- White background: <rect width="400" height="280" fill="white"/>
-- Black strokes and text, clean minimal style
-- Use only: rect, circle, line, polyline, path, ellipse, text, defs, marker
-- Label key parts with <text> elements
-- Make it clear and readable for a competitive exam student"""
+    @staticmethod
+    def _tag_latex(questions: list) -> None:
+        """
+        Set has_latex=True on any question dict whose text or options contain
+        $...$ / $$...$$ math delimiters.  Mutates in-place; never raises.
+        """
+        try:
+            from latex.service.latexservice import has_math as _has_math
+        except Exception:
+            return
 
-        message = self._client.messages.create(
-            model=HAIKU_MODEL,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        raw = message.content[0].text.strip()
-        # Strip any markdown code fences
-        if "```" in raw:
-            start = raw.find("<svg")
-            end   = raw.rfind("</svg>")
-            if start != -1 and end != -1:
-                raw = raw[start:end + 6]
-        # Ensure it starts with <svg
-        if not raw.startswith("<svg"):
-            start = raw.find("<svg")
-            if start != -1:
-                raw = raw[start:]
-        # Ensure width/height attributes are present so inline SVG renders correctly
-        if raw.startswith("<svg") and 'width=' not in raw[:80]:
-            raw = raw.replace("<svg", '<svg width="400" height="280"', 1)
-        return raw
+        for q in questions:
+            text = q.get("text", "") or ""
+            opts = q.get("options") or []
+            flag = _has_math(text) or any(
+                _has_math(o.get("text", "") if isinstance(o, dict) else str(o))
+                for o in opts
+            )
+            q["has_latex"] = flag
 
     @staticmethod
     def _parse_questions_response(raw: str) -> list:
@@ -294,7 +456,30 @@ Rules:
             end = raw.rfind("]")
             if start != -1 and end != -1:
                 raw = raw[start:end + 1]
-        return json.loads(raw)
+        return _loads_lenient(raw)
+
+    # Default diagram schemas used for mock (no-API) mode, keyed by subject
+    _MOCK_DIAGRAM_SCHEMAS = {
+        "Physics": {
+            "diagram_type": "physics", "subtype": "inclined_plane",
+            "params": {"angle": 37, "forces": ["mg", "N", "f"], "block_label": "m"},
+        },
+        "Chemistry": {
+            "diagram_type": "chemistry", "subtype": "reaction_coordinate_graph",
+            "params": {"reactant_energy": 0, "product_energy": -40, "activation_energy": 80},
+        },
+        "Mathematics": {
+            "diagram_type": "mathematics", "subtype": "function_graph",
+            "params": {"functions": [{"expression": "x**2 - 4", "label": "f(x)=x²-4", "x_range": [-4, 4]}]},
+        },
+        "default": {
+            "diagram_type": "physics", "subtype": "free_body_diagram",
+            "params": {
+                "object": {"shape": "square", "label": "m"},
+                "forces": [{"label": "mg", "direction_deg": 270}, {"label": "N", "direction_deg": 90}],
+            },
+        },
+    }
 
     def _mock_questions(self, exam: str, subject: str, topic: str, q_type: str,
                         difficulty: str, bloom: str, count: int) -> list:
@@ -311,14 +496,20 @@ Rules:
                 "text": f"[{subject}] Sample {q_type} question {i + 1} for {exam}.",
                 "options": None,
                 "explanation": "Sample explanation.",
+                "diagram_schema": None,
+                "image_svg": None,
             }
-            if q_type == "MCQ":
+            if q_type in ("MCQ", "Image Based"):
                 q["options"] = [
                     {"text": "Option A", "correct": True},
                     {"text": "Option B", "correct": False},
                     {"text": "Option C", "correct": False},
                     {"text": "Option D", "correct": False},
                 ]
+            if q_type == "Image Based":
+                schema = self._MOCK_DIAGRAM_SCHEMAS.get(subject, self._MOCK_DIAGRAM_SCHEMAS["default"])
+                q["diagram_schema"] = schema
+                q["image_svg"] = self._render_diagram_schema(schema, subject=subject)
             questions.append(q)
         return questions
 

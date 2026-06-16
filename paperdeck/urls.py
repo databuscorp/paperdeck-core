@@ -15,4 +15,7 @@ urlpatterns = [
     path('api/mocktests/', include('mocktests.urls')),
     path('api/blueprints/', include('blueprints.urls')),
     path('api/exams/', include('exams.urls')),
+    path('api/diagrams/', include('diagrams.urls')),
+    path('api/health/', include('diagrams.urls_health')),
+    path('api/latex/', include('latex.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

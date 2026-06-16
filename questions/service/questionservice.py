@@ -2,6 +2,19 @@ from questions.models import Question
 from questions.processor.questionprocessor import QuestionResponse
 from utility.dbservice import DBService
 from utility.utilityobj import SuccessResponse, ErrorResponse
+from latex.service.latexservice import has_math
+
+
+def _detect_latex(text: str, options) -> bool:
+    """Return True if *text* or any option string contains $...$ / $$...$$ math."""
+    if has_math(text or ""):
+        return True
+    if isinstance(options, list):
+        for opt in options:
+            opt_text = opt.get("text", "") if isinstance(opt, dict) else str(opt)
+            if has_math(opt_text):
+                return True
+    return False
 
 
 def _build(q: Question) -> QuestionResponse:
@@ -26,6 +39,7 @@ def _build(q: Question) -> QuestionResponse:
         options=q.options,
         explanation=q.explanation,
         image_svg=q.image_svg,
+        has_latex=q.has_latex,
     )
 
 
@@ -113,6 +127,7 @@ class QuestionService(DBService):
                 explanation=req.explanation,
                 image_svg=req.image_svg,
                 source=req.source or 'manual',
+                has_latex=_detect_latex(req.text, req.options),
             )
         else:
             try:
@@ -143,6 +158,8 @@ class QuestionService(DBService):
             q.image_svg = req.image_svg
             if req.source:
                 q.source = req.source
+            # Re-compute has_latex whenever text or options change
+            q.has_latex = _detect_latex(req.text, req.options)
             q.save()
 
         return _build(q)
