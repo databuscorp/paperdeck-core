@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'exams',
     'diagrams',
     'latex',
+    'printtemplates',
 ]
 
 MIDDLEWARE = [
