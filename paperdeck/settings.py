@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     'diagrams',
     'latex',
     'printtemplates',
+    'billing',
 ]
 
 MIDDLEWARE = [

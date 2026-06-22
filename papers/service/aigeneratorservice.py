@@ -39,6 +39,62 @@ def _loads_lenient(raw: str):
     sanitized = _JSON_ESCAPE_RE.sub(lambda m: m.group(0) if m.group(0) != "\\" else "\\\\", raw)
     return json.loads(sanitized)
 
+
+def _img_is_block(data_url: str) -> bool:
+    """True if an image is a figure/diagram (render as a block) rather than an
+    inline equation. A real diagram is large in BOTH dimensions or has a large
+    area; a tall fraction or a wide expression stays inline so it isn't blown up."""
+    try:
+        import base64
+        import io
+        from PIL import Image
+        b64 = data_url.split(',', 1)[1]
+        w, h = Image.open(io.BytesIO(base64.b64decode(b64))).size
+        return (w >= 200 and h >= 120) or (w * h >= 45000)
+    except Exception:
+        return False
+
+
+def _salvage_objects(raw: str) -> list:
+    """Extract every COMPLETE top-level {...} object from a (possibly truncated)
+    string via brace counting, parsing each individually. Lets us recover all
+    finished question objects when the model's JSON was cut off mid-array."""
+    out = []
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(raw):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    chunk = raw[start:i + 1]
+                    for parse in (lambda: _loads_lenient(chunk), lambda: json.loads(chunk)):
+                        try:
+                            obj = parse()
+                            if isinstance(obj, dict):
+                                out.append(obj)
+                            break
+                        except Exception:
+                            continue
+                    start = -1
+    return out
+
 # ── LaTeX math notation hint ──────────────────────────────────────────────────
 # Injected into every question-generation prompt so the AI consistently
 # uses $...$ delimiters that the LaTeX rendering pipeline can parse.
@@ -237,6 +293,15 @@ class AIGeneratorService:
     def __init__(self):
         api_key = os.environ.get('ANTHROPIC_API_KEY', '')
         self._client = anthropic.Anthropic(api_key=api_key) if api_key else None
+        # Accumulated Claude token usage for the current call (for credit metering).
+        self.last_usage = {'input_tokens': 0, 'output_tokens': 0}
+
+    def _add_usage(self, message):
+        try:
+            self.last_usage['input_tokens'] += int(getattr(message.usage, 'input_tokens', 0) or 0)
+            self.last_usage['output_tokens'] += int(getattr(message.usage, 'output_tokens', 0) or 0)
+        except Exception:
+            pass
 
     def generate_paper(self, exam_type: str, subjects: list, difficulty: str, total_marks: int) -> dict:
         if not self._client:
@@ -285,6 +350,7 @@ class AIGeneratorService:
 
     def generate_questions(self, exam: str, subject: str, topic: str, q_type: str,
                            difficulty: str, bloom: str, count: int) -> list:
+        self.last_usage = {'input_tokens': 0, 'output_tokens': 0}
         if not self._client:
             return self._mock_questions(exam, subject, topic, q_type, difficulty, bloom, count)
 
@@ -300,6 +366,153 @@ class AIGeneratorService:
             results.extend(self._generate_batch(exam, subject, topic, q_type, difficulty, bloom, batch))
             remaining -= batch
         return results
+
+    # Max characters of source text sent to the model in one parse pass.
+    _PARSE_CHAR_LIMIT = 28000
+
+    def parse_paper(self, raw_text: str, exam: str = '', images: dict = None) -> dict:
+        """Extract structured questions from the raw text of an uploaded paper.
+
+        `images` maps `[[IMG:rId]]` markers (present in the text in reading order)
+        to data URLs; after parsing, each question keeps its image as image_svg.
+        """
+        images = images or {}
+        self.last_usage = {'input_tokens': 0, 'output_tokens': 0}
+        text = (raw_text or '').strip()
+        if not text:
+            return {'questions': [], 'meta': {}}
+        if not self._client:
+            return {'questions': [], 'meta': {'title': ''}}
+
+        truncated = len(text) > self._PARSE_CHAR_LIMIT
+        if truncated:
+            text = text[:self._PARSE_CHAR_LIMIT]
+
+        prompt = f"""You are given the raw text extracted from a question paper. Extract EVERY question into structured JSON.
+
+{_LATEX_MATH_HINT}
+
+Return ONLY a JSON object (no markdown, no extra text):
+{{
+  "title": "the paper/exam title if present, else ''",
+  "questions": [
+    {{
+      "exam": "{exam or 'General'}",
+      "subject": "best-guess subject for this question",
+      "topic": "best-guess topic or 'General'",
+      "q_type": "MCQ | Numerical | Short Answer | Long Answer | Fill in Blank",
+      "difficulty": "Easy|Medium|Hard|HOTS",
+      "bloom": "Remember|Understand|Apply|Analyze|Evaluate|Create",
+      "marks": 1,
+      "text": "the full question text, with LaTeX math as $...$",
+      "options": [{{"text":"option text","correct":false}}] ,
+      "explanation": ""
+    }}
+  ]
+}}
+
+Rules:
+- Use "options" ONLY for multiple-choice questions; otherwise set it to null.
+- If the correct MCQ option is not indicated in the source, set every option's "correct" to false.
+- Read marks from brackets like [2] or "(3 marks)"; default to 1 if absent.
+- Keep each question's text complete and verbatim where possible; convert equations to LaTeX.
+- Skip headers, instructions, and page furniture — extract questions only.
+- The text may contain image markers like [[IMG:rId7]] (figures/diagrams). Keep each marker INSIDE the "text" of the question it belongs to, exactly as written.
+
+SOURCE TEXT:
+\"\"\"
+{text}
+\"\"\""""
+
+        message = self._client.messages.create(
+            model=HAIKU_MODEL,
+            max_tokens=32000,   # long papers (40+ Q) need a large output budget
+            messages=[{"role": "user", "content": prompt}],
+        )
+        self._add_usage(message)
+        # max_tokens cut-off → the JSON is incomplete; we salvage what's complete.
+        cut_off = getattr(message, 'stop_reason', None) == 'max_tokens'
+
+        raw = (message.content[0].text or "").strip()
+        logger.info("parse_paper: %d chars, stop=%s, usage=%s",
+                    len(raw), getattr(message, 'stop_reason', '?'), self.last_usage)
+
+        # The model may wrap JSON in ```fences``` or add prose — extract the JSON
+        # object (or array) substring before parsing.
+        obj_s, obj_e = raw.find("{"), raw.rfind("}")
+        arr_s, arr_e = raw.find("["), raw.rfind("]")
+        if obj_s != -1 and obj_e > obj_s and (arr_s == -1 or obj_s < arr_s):
+            candidate = raw[obj_s:obj_e + 1]
+        elif arr_s != -1 and arr_e > arr_s:
+            candidate = raw[arr_s:arr_e + 1]
+        else:
+            candidate = raw
+
+        data = None
+        if not cut_off:
+            for attempt in (
+                lambda: _loads_lenient(candidate),
+                lambda: json.loads(candidate),
+                lambda: json.loads(re.sub(r',\s*([}\]])', r'\1', candidate)),  # drop trailing commas
+            ):
+                try:
+                    data = attempt()
+                    break
+                except Exception:
+                    continue
+
+        title = ''
+        if isinstance(data, dict):
+            title = data.get('title', '') or ''
+            questions = data.get('questions', []) or []
+        elif isinstance(data, list):
+            questions = data
+        else:
+            # Whole-document parse failed or was cut off — salvage every complete
+            # question object from the (partial) array. Skip the leading title obj.
+            objs = _salvage_objects(raw)
+            questions = [o for o in objs if 'text' in o] or objs
+            if cut_off:
+                truncated = True
+            logger.warning("parse_paper: salvaged %d questions (cut_off=%s)", len(questions), cut_off)
+
+        if not questions:
+            logger.warning("parse_paper: 0 questions. Raw head: %r", raw[:600])
+        # Normalise + tag LaTeX, mirroring generation output. Inline images: keep
+        # every [[IMG:rId]] marker in the text but renumber them per-question to a
+        # clean sequence ([[IMG:1]], [[IMG:2]], …) with a matching base64 map.
+        for q in questions:
+            if q.get('q_type') not in ('MCQ', 'Image Based'):
+                q['options'] = None
+            if images:
+                # Renumber [[IMG:rId]] markers across BOTH the question text and its
+                # options into one shared per-question sequence with a base64 map.
+                seq = {}        # "1" -> dataUrl, in reading order within this question
+                def _renum(m):
+                    rid = m.group(1)
+                    if rid not in images:
+                        return ' '   # unresolved (e.g. WMF not converted) → drop marker
+                    n = str(len(seq) + 1)
+                    seq[n] = images[rid]
+                    # Tall images are figures/diagrams (block); short ones are inline
+                    # equations. The renderer sizes them accordingly.
+                    tag = 'FIG' if _img_is_block(images[rid]) else 'IMG'
+                    return f' [[{tag}:{n}]] '
+
+                def _clean(s):
+                    if not s or '[[IMG:' not in s:
+                        return s
+                    return re.sub(r'\s{2,}', ' ', re.sub(r'\s*\[\[IMG:([^\]]+)\]\]\s*', _renum, s)).strip()
+
+                q['text'] = _clean(q.get('text') or '')
+                if isinstance(q.get('options'), list):
+                    for opt in q['options']:
+                        if isinstance(opt, dict):
+                            opt['text'] = _clean(opt.get('text') or '')
+                if seq:
+                    q['images'] = seq
+        self._tag_latex(questions)
+        return {'questions': questions, 'meta': {'title': title}, 'truncated': truncated}
 
     def _generate_batch(self, exam: str, subject: str, topic: str, q_type: str,
                         difficulty: str, bloom: str, count: int, _retry: int = 0) -> list:
@@ -365,6 +578,7 @@ For diagram_schema, fill in real numeric values that make sense for the question
                 max_tokens=8192,
                 messages=[{"role": "user", "content": prompt}]
             )
+            self._add_usage(message)
             questions = self._parse_questions_response(message.content[0].text.strip())
 
             # Render diagram schemas deterministically — no AI image generation

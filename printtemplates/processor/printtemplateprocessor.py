@@ -19,9 +19,12 @@ print_template_req_schema = marshmallow_dataclass.class_schema(PrintTemplateRequ
 @dataclass_json
 @dataclass
 class PrintTemplateResponse:
-    id:           int
-    org_id:       Optional[int]
-    name:         str
-    style_config: str
-    is_active:    bool
-    created_at:   str
+    id:              int
+    org_id:          Optional[int]
+    name:            str
+    style_config:    str
+    is_active:       bool
+    created_at:      str
+    updated_at:      Optional[str] = None
+    created_by_name: str = ''
+    updated_by_name: str = ''

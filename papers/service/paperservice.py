@@ -1,8 +1,83 @@
+import re
+
 from papers.models import Paper, PaperSection, PaperQuestion
 from papers.processor.paperprocessor import PaperResponse, PaperSectionResponse
 from papers.service.aigeneratorservice import AIGeneratorService
 from utility.dbservice import DBService
 from utility.utilityobj import SuccessResponse, ErrorResponse
+
+
+# Strips a leading option label like "A) ", "(B) ", "C. " so it isn't double-numbered
+# by the renderer (which prepends its own "(a) (b) …").
+_OPT_PREFIX_RE = re.compile(r'^\s*\(?[A-Da-d][\)\.\]]\s*')
+
+
+def _normalize_options(q):
+    """Convert AI option strings (["A) foo", …]) into builder options
+    [{id, text, correct}], using `correct_answer` (a letter) to flag the right one."""
+    raw = q.get('options') or []
+    corr = (str(q.get('correct_answer') or '')).strip().upper()[:1]
+    out = []
+    for oi, o in enumerate(raw):
+        letter = chr(65 + oi)
+        if isinstance(o, dict):
+            text = o.get('text') or o.get('label') or ''
+            is_correct = bool(o.get('correct')) or (corr == letter)
+        else:
+            text = _OPT_PREFIX_RE.sub('', str(o)).strip()
+            is_correct = (corr == letter)
+        out.append({'id': oi + 1, 'text': text, 'correct': is_correct})
+    return out
+
+
+def _normalize_ai_content(content, req, exam_type):
+    """Convert the AI generator's paper JSON into the builder's {meta, sections}
+    shape so generated papers round-trip cleanly through the Paper Builder (Edit)
+    exactly like manually-built and imported papers."""
+    if not isinstance(content, dict):
+        return content
+    raw_sections = content.get('sections') or []
+    sections = []
+    for idx, sec in enumerate(raw_sections):
+        subject = sec.get('subject') or sec.get('name') or f'Section {idx + 1}'
+        questions = []
+        for qi, q in enumerate(sec.get('questions') or []):
+            questions.append({
+                'id':         f'ai-{idx}-{qi}',
+                'uid':        f'ai-{idx}-{qi}',
+                'exam':       exam_type,
+                'subject':    subject,
+                'topic':      q.get('topic') or '',
+                'type':       q.get('type') or q.get('q_type') or 'MCQ',
+                'difficulty': (req.difficulty or 'medium').capitalize(),
+                'bloom':      q.get('bloom') or '',
+                'marks':      q.get('marks') or 1,
+                'text':       q.get('text') or q.get('question') or '',
+                'explanation': q.get('explanation'),
+                'diagram':    q.get('diagram') or q.get('image_svg'),
+                'images':     q.get('images'),
+                'options':    _normalize_options(q),
+            })
+        sections.append({
+            'id':           f'ai-sec-{idx}',
+            'name':         subject,
+            'instructions': '',
+            'markLimit':    sum((qq.get('marks') or 0) for qq in questions),
+            'questions':    questions,
+        })
+    total_marks = content.get('total_marks') or req.total_marks or sum(s['markLimit'] for s in sections)
+    neg = next((q.get('negative_marks') for s in raw_sections
+                for q in (s.get('questions') or []) if q.get('negative_marks')), None)
+    meta = {
+        'title':        req.title,
+        'exam':         exam_type,
+        'duration':     f'{req.duration_minutes or 180} min',
+        'totalMarks':   total_marks,
+        'date':         '',
+        'negMarking':   f'{neg} for each wrong answer' if neg else '',
+        'instructions': req.instructions or '',
+    }
+    return {'meta': meta, 'sections': sections}
 
 
 def _build_section_response(sec: PaperSection) -> PaperSectionResponse:
@@ -137,7 +212,7 @@ class PaperService(DBService):
                 duration_minutes=req.duration_minutes,
                 content={'meta': req.meta, 'sections': req.sections},
                 status=Paper.STATUS_DRAFT,
-                source='manual',
+                source=req.source or 'manual',
             )
 
         _sync_sections(paper, req.sections)
@@ -164,12 +239,13 @@ class PaperService(DBService):
 
         try:
             generator = AIGeneratorService()
-            content = generator.generate_paper(
+            raw_content = generator.generate_paper(
                 exam_type=exam_type,
                 subjects=req.subjects or [],
                 difficulty=req.difficulty or 'medium',
                 total_marks=req.total_marks or 720,
             )
+            content = _normalize_ai_content(raw_content, req, exam_type)
             paper.content = content
             paper.status = Paper.STATUS_GENERATED
             paper.save()

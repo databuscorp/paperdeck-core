@@ -25,6 +25,7 @@ class QuestionRequest:
     options:     Optional[Any] = None
     explanation: Optional[str] = None
     image_svg:   Optional[str] = None
+    images:      Optional[Any] = None   # {"1": dataUrl, ...} for [[IMG:n]] markers
     source:      Optional[str] = 'manual'
     id:          Optional[int] = None
     # has_latex is computed server-side; clients may send it but it is re-computed on every save
@@ -77,5 +78,6 @@ class QuestionResponse:
     options:     Optional[Any]
     explanation: Optional[str]
     image_svg:   Optional[str]
+    images:      Optional[Any] = None   # {"1": dataUrl, ...} for [[IMG:n]] markers
     # LaTeX flag — True when text/options contain $...$ math notation
     has_latex:   bool = False

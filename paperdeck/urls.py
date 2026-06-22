@@ -19,4 +19,5 @@ urlpatterns = [
     path('api/health/', include('diagrams.urls_health')),
     path('api/latex/', include('latex.urls')),
     path('api/printtemplates/', include('printtemplates.urls')),
+    path('api/billing/', include('billing.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

@@ -34,6 +34,7 @@ class PaperSaveRequest:
     exam_type:        Optional[str] = None
     meta:             Any = None
     sections:         Any = None
+    source:           Optional[str] = None   # manual | ai | import
     id:               Optional[int] = None
 
 

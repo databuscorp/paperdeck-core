@@ -21,6 +21,8 @@ class Question(models.Model):
     options     = models.JSONField(null=True, blank=True)
     explanation = models.TextField(null=True, blank=True)
     image_svg   = models.TextField(null=True, blank=True)
+    # Inline images referenced by [[IMG:n]] markers in `text` — {"1": dataUrl, ...}.
+    images      = models.JSONField(null=True, blank=True)
     source      = models.CharField(max_length=20, default='manual')  # manual | ai
     # True when text or any option contains $...$ / $$...$$ math notation.
     # Set automatically on every save via QuestionService / AI generator.

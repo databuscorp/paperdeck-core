@@ -35,6 +35,9 @@ def _fetch(request):
             return HttpResponse('null', content_type='application/json')
         return HttpResponse(resp.to_json(), content_type='application/json')
 
+    if request.query_params.get('audit'):
+        return HttpResponse(json.dumps(service.fetch_audit(org_id=org_id)), content_type='application/json')
+
     resp_list = service.fetch_all(org_id=org_id)
     return HttpResponse(json.dumps([t.to_dict() for t in resp_list]), content_type='application/json')
 
@@ -54,7 +57,7 @@ def _post(request):
     set_active_id = request.query_params.get('set_active')
     service = PrintTemplateService(scope)
     if set_active_id:
-        resp = service.set_active(set_active_id, org_id=org_id)
+        resp = service.set_active(set_active_id, org_id=org_id, user_id=user_id)
         if isinstance(resp, ErrorResponse):
             return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
         return HttpResponse(resp.to_json(), content_type='application/json')
@@ -83,7 +86,7 @@ def _delete(request):
         )
 
     service = PrintTemplateService(scope)
-    resp = service.delete(template_id, org_id=org_id)
+    resp = service.delete(template_id, org_id=org_id, user_id=scope['user_id'])
     if isinstance(resp, ErrorResponse):
         return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
     return HttpResponse(resp.to_json(), content_type='application/json')

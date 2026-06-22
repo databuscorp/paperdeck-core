@@ -39,6 +39,7 @@ def _build(q: Question) -> QuestionResponse:
         options=q.options,
         explanation=q.explanation,
         image_svg=q.image_svg,
+        images=q.images,
         has_latex=q.has_latex,
     )
 
@@ -126,6 +127,7 @@ class QuestionService(DBService):
                 options=req.options,
                 explanation=req.explanation,
                 image_svg=req.image_svg,
+                images=req.images,
                 source=req.source or 'manual',
                 has_latex=_detect_latex(req.text, req.options),
             )
@@ -156,6 +158,7 @@ class QuestionService(DBService):
             q.options = req.options
             q.explanation = req.explanation
             q.image_svg = req.image_svg
+            q.images = req.images
             if req.source:
                 q.source = req.source
             # Re-compute has_latex whenever text or options change
