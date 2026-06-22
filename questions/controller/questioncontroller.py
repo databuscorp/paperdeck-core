@@ -131,8 +131,19 @@ def generate_questions(request):
         )
 
 
+class _MissingDependency(Exception):
+    """Raised when an optional extraction dependency isn't installed, so the
+    controller can return a clear message instead of a raw 500 ImportError."""
+
+
 def _extract_pdf_text(f) -> str:
-    from pypdf import PdfReader
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        raise _MissingDependency(
+            "PDF support is not installed on the server (pypdf). "
+            "Run 'pip install -r requirements.txt' on the backend, or upload a Word (.docx) file instead."
+        )
     reader = PdfReader(f)
     return "\n".join((p.extract_text() or "") for p in reader.pages)
 
@@ -284,6 +295,9 @@ def import_paper(request):
         else:
             return HttpResponse(ErrorResponse(status=400, message='Unsupported file type — upload a PDF or Word (.docx).').to_json(),
                                 status=400, content_type='application/json')
+    except _MissingDependency as e:
+        return HttpResponse(ErrorResponse(status=503, message=str(e)).to_json(),
+                            status=503, content_type='application/json')
     except Exception as e:
         return HttpResponse(ErrorResponse(status=400, message=f'Could not read the file: {str(e)}').to_json(),
                             status=400, content_type='application/json')
