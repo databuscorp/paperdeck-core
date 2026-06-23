@@ -40,17 +40,43 @@ def _loads_lenient(raw: str):
     return json.loads(sanitized)
 
 
+_MATH_SPLIT_RE = re.compile(r'(\$\$[^$]*\$\$|\$[^$]+\$)')
+
+
+def _normalize_ws_outside_math(s: str) -> str:
+    r"""Repair structural whitespace that the LaTeX-safe lenient JSON parse turned
+    into literal ``\n`` / ``\t`` / ``\r`` — but only OUTSIDE ``$...$`` math, so
+    real LaTeX commands (``\frac``, ``\nabla``) inside math stay intact. Without
+    this, imported prose shows visible ``\n\n`` between sentences/sub-parts."""
+    if not s or '\\' not in s:
+        return s
+    out = []
+    for i, seg in enumerate(_MATH_SPLIT_RE.split(s)):
+        if i % 2 == 1:                       # math segment — leave LaTeX untouched
+            out.append(seg)
+        else:
+            seg = (seg.replace('\\r\\n', '\n').replace('\\n', '\n')
+                      .replace('\\t', '\t').replace('\\r', '\n'))
+            out.append(seg)
+    s = ''.join(out)
+    s = re.sub(r'[ \t]+\n', '\n', s)         # strip trailing whitespace before a break
+    s = re.sub(r'\n[ ]+', '\n', s)           # strip leading spaces (keep \t indentation)
+    s = re.sub(r'\n{3,}', '\n\n', s)         # cap blank-line runs
+    return s.strip()
+
+
 def _img_is_block(data_url: str) -> bool:
     """True if an image is a figure/diagram (render as a block) rather than an
-    inline equation. A real diagram is large in BOTH dimensions or has a large
-    area; a tall fraction or a wide expression stays inline so it isn't blown up."""
+    inline equation. A real diagram is large in both dimensions, clearly tall, or
+    has a large area; a short fraction or a wide inline expression stays inline so
+    it isn't blown up. (A fraction crops to ~<200px tall; figures are taller.)"""
     try:
         import base64
         import io
         from PIL import Image
         b64 = data_url.split(',', 1)[1]
         w, h = Image.open(io.BytesIO(base64.b64decode(b64))).size
-        return (w >= 200 and h >= 120) or (w * h >= 45000)
+        return (w >= 200 and h >= 120) or h >= 200 or (w * h >= 30000)
     except Exception:
         return False
 
@@ -416,8 +442,9 @@ Rules:
 - If the correct MCQ option is not indicated in the source, set every option's "correct" to false.
 - Read marks from brackets like [2] or "(3 marks)"; default to 1 if absent.
 - Keep each question's text complete and verbatim where possible; convert equations to LaTeX.
+- Treat a question that has sub-parts labelled (a), (b), (c)… as ONE question: put the stem AND all sub-parts together in "text". Do NOT split the sub-parts into separate questions.
 - Skip headers, instructions, and page furniture — extract questions only.
-- The text may contain image markers like [[IMG:rId7]] (figures/diagrams). Keep each marker INSIDE the "text" of the question it belongs to, exactly as written.
+- CRITICAL: the text contains image markers like [[IMG:p1f0]] (figures/diagrams). Preserve EVERY marker EXACTLY as written, inside the "text" of the question where it appears. Never omit, rename, or merge a marker — each one renders a figure the student needs.
 
 SOURCE TEXT:
 \"\"\"
@@ -481,6 +508,7 @@ SOURCE TEXT:
         # Normalise + tag LaTeX, mirroring generation output. Inline images: keep
         # every [[IMG:rId]] marker in the text but renumber them per-question to a
         # clean sequence ([[IMG:1]], [[IMG:2]], …) with a matching base64 map.
+        used_rids = set()   # original markers the AI preserved (so we can rescue the rest)
         for q in questions:
             if q.get('q_type') not in ('MCQ', 'Image Based'):
                 q['options'] = None
@@ -492,6 +520,7 @@ SOURCE TEXT:
                     rid = m.group(1)
                     if rid not in images:
                         return ' '   # unresolved (e.g. WMF not converted) → drop marker
+                    used_rids.add(rid)
                     n = str(len(seq) + 1)
                     seq[n] = images[rid]
                     # Tall images are figures/diagrams (block); short ones are inline
@@ -511,6 +540,38 @@ SOURCE TEXT:
                             opt['text'] = _clean(opt.get('text') or '')
                 if seq:
                     q['images'] = seq
+
+            # Undo literal \n / \t introduced by the LaTeX-safe JSON parse (outside math).
+            q['text'] = _normalize_ws_outside_math(q.get('text') or '')
+            if isinstance(q.get('options'), list):
+                for opt in q['options']:
+                    if isinstance(opt, dict):
+                        opt['text'] = _normalize_ws_outside_math(opt.get('text') or '')
+
+        # Safety net: the model sometimes drops [[IMG:…]] markers (e.g. when it
+        # restructures a multi-part question). Rescue any extracted figure that
+        # didn't survive by attaching it to the question whose text best matches
+        # the figure's surrounding context in the source — so no figure is lost.
+        if images and questions:
+            orphans = [rid for rid in images if rid not in used_rids]
+            if orphans:
+                # Context = the source text just before each marker (the question stem).
+                fig_context = {m.group(1): text[max(0, m.start() - 200):m.start()]
+                               for m in re.finditer(r'\[\[IMG:([^\]]+)\]\]', text)}
+
+                def _words(s):
+                    return set(re.findall(r'[a-z]{4,}', (s or '').lower()))
+
+                for rid in orphans:
+                    ctx = _words(fig_context.get(rid, ''))
+                    best = max(questions, key=lambda q: len(ctx & _words(q.get('text', ''))))
+                    seq = best.get('images')
+                    if not isinstance(seq, dict):
+                        seq = best['images'] = {}
+                    n = str(len(seq) + 1)
+                    seq[n] = images[rid]
+                    tag = 'FIG' if _img_is_block(images[rid]) else 'IMG'
+                    best['text'] = f"{(best.get('text') or '').rstrip()} [[{tag}:{n}]]".strip()
         self._tag_latex(questions)
         return {'questions': questions, 'meta': {'title': title}, 'truncated': truncated}
 

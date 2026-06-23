@@ -148,6 +148,105 @@ def _extract_pdf_text(f) -> str:
     return "\n".join((p.extract_text() or "") for p in reader.pages)
 
 
+def _merge_rects(rects, gap, _fitz):
+    """Union overlapping/nearby rectangles (within `gap` pts) into clusters."""
+    rects = [_fitz.Rect(r) for r in rects]
+    changed = True
+    while changed:
+        changed = False
+        out = []
+        while rects:
+            r = rects.pop()
+            merged = True
+            while merged:
+                merged = False
+                rest = []
+                for o in rects:
+                    expanded = _fitz.Rect(r.x0 - gap, r.y0 - gap, r.x1 + gap, r.y1 + gap)
+                    if expanded.intersects(o):
+                        r |= o
+                        merged = changed = True
+                    else:
+                        rest.append(o)
+                rects = rest
+            out.append(r)
+        rects = out
+    return rects
+
+
+def _extract_pdf_text_images(f):
+    """Extract text + figures from a PDF, returning (text_with_markers, images).
+
+    Unlike pypdf (text-only), this also captures FIGURES — including vector line
+    drawings, which aren't embedded raster images and so are invisible to
+    pypdf.page.images. Each page's graphics are clustered into figure regions,
+    rendered to PNG, and a `[[IMG:key]]` marker is left in reading order so
+    parse_paper can attach the figure to the question it belongs to (mirroring the
+    .docx path). Falls back to text-only if PyMuPDF isn't installed."""
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        return _extract_pdf_text(f), {}
+    import base64
+
+    doc = fitz.open(stream=f.read(), filetype="pdf")
+    parts = []
+    images = {}
+    fig_no = 0
+    for pno in range(len(doc)):
+        page = doc[pno]
+        pr = page.rect
+        W, H = pr.width, pr.height
+
+        # Collect graphic rectangles: vector drawings + raster image placements.
+        graphics = []
+        for d in page.get_drawings():
+            r = fitz.Rect(d["rect"])
+            if r.width < 3 or r.height < 3:                 # hairline rule/underline
+                continue
+            if r.width > W * 0.92 and r.height > H * 0.92:  # full-page frame
+                continue
+            graphics.append(r)
+        for img in page.get_images(full=True):
+            try:
+                for r in page.get_image_rects(img[0]):
+                    graphics.append(fitz.Rect(r))
+            except Exception:
+                pass
+
+        figs = [c for c in _merge_rects(graphics, 14, fitz)
+                if c.width >= 40 and c.height >= 40 and c.get_area() >= 4000 and c.height <= H * 0.9]
+
+        # Interleave text blocks and figures in reading order (top→bottom, left→right).
+        items = []
+        for b in page.get_text("blocks"):
+            x0, y0, x1, y1, btext = b[0], b[1], b[2], b[3], (b[4] or "")
+            if not btext.strip():
+                continue
+            br = fitz.Rect(x0, y0, x1, y1)
+            if any(fg.contains(br) for fg in figs):         # label/caption inside a figure
+                continue
+            items.append((y0, x0, "text", btext.strip()))
+        for fg in figs:
+            items.append((fg.y0, fg.x0, "fig", fg))
+        items.sort(key=lambda it: (round(it[0] / 6), it[1]))
+
+        for _, _, kind, payload in items:
+            if kind == "text":
+                parts.append(payload)
+            else:
+                pad = 6
+                clip = fitz.Rect(payload.x0 - pad, payload.y0 - pad, payload.x1 + pad, payload.y1 + pad) & pr
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False)
+                png = _autocrop_png(pix.tobytes("png"))
+                key = f"p{pno}f{fig_no}"
+                images[key] = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+                parts.append(f" [[IMG:{key}]] ")
+                fig_no += 1
+
+    return "\n".join(parts), images
+
+
 _RASTER_MIME = {'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'gif': 'image/gif'}
 
 
@@ -286,7 +385,7 @@ def import_paper(request):
     wmf_total = wmf_converted = 0
     try:
         if name.endswith('.pdf'):
-            text = _extract_pdf_text(f)
+            text, images = _extract_pdf_text_images(f)
         elif name.endswith('.docx'):
             text, eqn_objects, images, wmf_total, wmf_converted = _extract_docx_text(f)
         elif name.endswith('.doc'):

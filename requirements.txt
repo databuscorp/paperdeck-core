@@ -10,6 +10,7 @@ dacite==1.8.1
 anthropic==0.40.0
 Pillow==11.1.0
 pypdf==6.13.3          # PDF text extraction for paper import
+pymupdf==1.27.2.3      # PDF figure/diagram extraction (vector + raster) for paper import
 gunicorn==23.0.0
 
 # ── STEM Diagram Engine ────────────────────────────────────────────────────────
