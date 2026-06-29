@@ -1,4 +1,5 @@
 import json
+import re
 
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -174,6 +175,55 @@ def _merge_rects(rects, gap, _fitz):
     return rects
 
 
+_FURNITURE_RES = [
+    re.compile(p, re.I) for p in (
+        r'^©\s*ucles',                      # copyright line
+        r'^dc\s*\([^)]*\)',                 # printer code, e.g. DC (DE/CT) 343111/3
+        r'this document (has|consists of)\b',
+        r'^\[?\s*turn over\b',
+        r'permission to reproduce',
+        r'^blank page$',
+    )
+]
+
+
+def _is_furniture(text: str) -> bool:
+    """True for page furniture that should not be parsed as question content:
+    margin notes, barcodes, copyright/printer codes, 'Turn over', etc."""
+    s = re.sub(r'\s+', ' ', text).strip()
+    if not s:
+        return True
+    low = s.lower()
+    # "DO NOT WRITE IN THIS MARGIN" — usually a block of just that, repeated.
+    if 'do not write in this margin' in low:
+        if len(low.replace('do not write in this margin', '').strip(' ·,|')) < 15:
+            return True
+    if re.fullmatch(r'\*?\s*[\d ]{5,}\s*\*?', s):       # candidate barcode (digits/spaces)
+        return True
+    return any(rx.search(low) for rx in _FURNITURE_RES)
+
+
+def _clean_block(text: str) -> str:
+    """Collapse dotted/underscore answer-line leaders that pollute extracted text."""
+    text = re.sub(r'[.…_]{4,}', ' ', text)            # solid leaders ........
+    text = re.sub(r'(?:[._·]\s){4,}[._·]?', ' ', text)  # spaced leaders . . . .
+    return text.strip()
+
+
+def _column_split(boxes, W):
+    """Return an x split position if the page is clearly two-column, else None.
+    Conservative: requires an empty central gutter (no block crosses it) and
+    enough content on both sides, so single-column pages are left untouched."""
+    if len(boxes) < 6:
+        return None
+    mid_lo, mid_hi = W * 0.42, W * 0.58
+    if any(b[0] < mid_lo and b[2] > mid_hi for b in boxes):   # a block spans the middle
+        return None
+    left = sum(1 for b in boxes if b[2] <= W * 0.52)
+    right = sum(1 for b in boxes if b[0] >= W * 0.48)
+    return W * 0.5 if left >= 3 and right >= 3 else None
+
+
 def _extract_pdf_text_images(f):
     """Extract text + figures from a PDF, returning (text_with_markers, images).
 
@@ -217,21 +267,29 @@ def _extract_pdf_text_images(f):
         figs = [c for c in _merge_rects(graphics, 14, fitz)
                 if c.width >= 40 and c.height >= 40 and c.get_area() >= 4000 and c.height <= H * 0.9]
 
-        # Interleave text blocks and figures in reading order (top→bottom, left→right).
-        items = []
+        # Collect content text blocks (drop page furniture, dotted answer lines,
+        # and captions that sit inside a figure).
+        text_blocks = []
         for b in page.get_text("blocks"):
             x0, y0, x1, y1, btext = b[0], b[1], b[2], b[3], (b[4] or "")
-            if not btext.strip():
+            btext = _clean_block(btext)
+            if not btext or _is_furniture(btext):
                 continue
-            br = fitz.Rect(x0, y0, x1, y1)
-            if any(fg.contains(br) for fg in figs):         # label/caption inside a figure
+            if any(fg.contains(fitz.Rect(x0, y0, x1, y1)) for fg in figs):
                 continue
-            items.append((y0, x0, "text", btext.strip()))
-        for fg in figs:
-            items.append((fg.y0, fg.x0, "fig", fg))
-        items.sort(key=lambda it: (round(it[0] / 6), it[1]))
+            text_blocks.append((x0, y0, x1, y1, btext))
 
-        for _, _, kind, payload in items:
+        # Reading order: top→bottom, left→right — but read column-by-column when the
+        # page is clearly two-column, so left/right text isn't interleaved per line.
+        boxes = [b[:4] for b in text_blocks] + [(fg.x0, fg.y0, fg.x1, fg.y1) for fg in figs]
+        split = _column_split(boxes, W)
+        col = lambda x0: 1 if (split is not None and x0 >= split) else 0
+        items = [(col(b[0]), round(b[1] / 6), b[0], "text", b[4]) for b in text_blocks]
+        items += [(col(fg.x0), round(fg.y0 / 6), fg.x0, "fig", fg) for fg in figs]
+        items.sort(key=lambda it: (it[0], it[1], it[2]))
+
+        for it in items:
+            kind, payload = it[3], it[4]
             if kind == "text":
                 parts.append(payload)
             else:

@@ -443,7 +443,8 @@ Rules:
 - Read marks from brackets like [2] or "(3 marks)"; default to 1 if absent.
 - Keep each question's text complete and verbatim where possible; convert equations to LaTeX.
 - Treat a question that has sub-parts labelled (a), (b), (c)… as ONE question: put the stem AND all sub-parts together in "text". Do NOT split the sub-parts into separate questions.
-- Skip headers, instructions, and page furniture — extract questions only.
+- Questions may be unnumbered or numbered inconsistently. Split by MEANING — start a new question at each distinct prompt/task — not by relying on visible numbers. Keep each question's options and sub-parts with it; never merge two separate questions into one.
+- Skip headers, instructions, and page furniture — extract questions only. Ignore margin notes ("DO NOT WRITE IN THIS MARGIN"), barcodes, "© UCLES", "[Turn over", page numbers, and rows of dots/underscores that are answer-writing space.
 - CRITICAL: the text contains image markers like [[IMG:p1f0]] (figures/diagrams). Preserve EVERY marker EXACTLY as written, inside the "text" of the question where it appears. Never omit, rename, or merge a marker — each one renders a figure the student needs.
 
 SOURCE TEXT:
