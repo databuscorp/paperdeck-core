@@ -224,6 +224,26 @@ def _column_split(boxes, W):
     return W * 0.5 if left >= 3 and right >= 3 else None
 
 
+def _is_label(text: str) -> bool:
+    """A short, single-line caption/annotation (e.g. 'width', 'length', '250') that
+    belongs to an adjacent figure rather than the question prose."""
+    s = text.strip()
+    return 0 < len(s) <= 25 and "\n" not in s
+
+
+def _near_aligned(a, b, gap: float) -> bool:
+    """True if rect b is close to rect a AND aligned with it — directly above/below
+    (x-ranges overlap) or beside (y-ranges overlap) within `gap`, or hugging a
+    corner within a tighter gap. Keeps figure-annotation absorption from grabbing
+    far-off or unrelated text."""
+    dx = max(b.x0 - a.x1, a.x0 - b.x1, 0.0)
+    dy = max(b.y0 - a.y1, a.y0 - b.y1, 0.0)
+    x_overlap = min(a.x1, b.x1) > max(a.x0, b.x0)
+    y_overlap = min(a.y1, b.y1) > max(a.y0, b.y0)
+    return ((x_overlap and dy <= gap) or (y_overlap and dx <= gap)
+            or (dx <= gap * 0.6 and dy <= gap * 0.6))
+
+
 def _extract_pdf_text_images(f):
     """Extract text + figures from a PDF, returning (text_with_markers, images).
 
@@ -236,7 +256,18 @@ def _extract_pdf_text_images(f):
     try:
         import fitz  # PyMuPDF
     except ImportError:
-        return _extract_pdf_text(f), {}
+        # A long-running server started before PyMuPDF was installed caches an
+        # import-path listing that omits it. Invalidate the caches and retry so we
+        # don't silently fall back to text-only (which drops all figures).
+        import importlib
+        importlib.invalidate_caches()
+        try:
+            import fitz  # noqa: F811
+        except ImportError:
+            import logging
+            logging.getLogger(__name__).warning(
+                "PyMuPDF (fitz) not importable — PDF figures will be skipped (text-only).")
+            return _extract_pdf_text(f), {}
     import base64
 
     doc = fitz.open(stream=f.read(), filetype="pdf")
@@ -248,36 +279,62 @@ def _extract_pdf_text_images(f):
         pr = page.rect
         W, H = pr.width, pr.height
 
-        # Collect graphic rectangles: vector drawings + raster image placements.
-        graphics = []
+        # Graphics: substantial rects (cluster into figures) vs thin lines
+        # (dimension arrows / leaders that annotate a figure).
+        substantial, thin = [], []
         for d in page.get_drawings():
             r = fitz.Rect(d["rect"])
-            if r.width < 3 or r.height < 3:                 # hairline rule/underline
-                continue
             if r.width > W * 0.92 and r.height > H * 0.92:  # full-page frame
                 continue
-            graphics.append(r)
+            (thin if (r.width < 3 or r.height < 3) else substantial).append(r)
         for img in page.get_images(full=True):
             try:
                 for r in page.get_image_rects(img[0]):
-                    graphics.append(fitz.Rect(r))
+                    substantial.append(fitz.Rect(r))
             except Exception:
                 pass
 
-        figs = [c for c in _merge_rects(graphics, 14, fitz)
+        figs = [c for c in _merge_rects(substantial, 14, fitz)
                 if c.width >= 40 and c.height >= 40 and c.get_area() >= 4000 and c.height <= H * 0.9]
+        orig_figs = [fitz.Rect(c) for c in figs]   # before annotation absorption
 
-        # Collect content text blocks (drop page furniture, dotted answer lines,
-        # and captions that sit inside a figure).
-        text_blocks = []
+        # Content text blocks (furniture + dotted answer lines already dropped).
+        raw_blocks = []
         for b in page.get_text("blocks"):
             x0, y0, x1, y1, btext = b[0], b[1], b[2], b[3], (b[4] or "")
             btext = _clean_block(btext)
             if not btext or _is_furniture(btext):
                 continue
-            if any(fg.contains(fitz.Rect(x0, y0, x1, y1)) for fg in figs):
-                continue
-            text_blocks.append((x0, y0, x1, y1, btext))
+            raw_blocks.append((fitz.Rect(x0, y0, x1, y1), btext))
+
+        # Figures absorb their annotations: nearby short dimension arrows and short
+        # labels (e.g. "width", "length", "250") grow into the figure so they render
+        # as part of the crop instead of leaking out as floating text (which both
+        # mislabels them and scrambles reading order). Grows iteratively within a gap.
+        # Each thin line / label is absorbed at most once (tracked by index) so the
+        # loop always terminates — a degenerate line on a figure edge would otherwise
+        # never read back as "contained" and spin forever.
+        used_thin = [False] * len(thin)
+        used_lbl  = [False] * len(raw_blocks)
+        for idx, fg in enumerate(figs):
+            grew = True
+            while grew:
+                grew = False
+                for j, r in enumerate(thin):                    # short arrows/leaders only
+                    if not used_thin[j] and max(r.width, r.height) <= 90 and _near_aligned(fg, r, 24):
+                        fg |= r; used_thin[j] = True; grew = True
+                for j, (rect, t) in enumerate(raw_blocks):
+                    if not used_lbl[j] and _is_label(t) and _near_aligned(fg, rect, 46):
+                        fg |= rect; used_lbl[j] = True; grew = True
+            figs[idx] = fg & pr
+
+        # Keep a text block unless it was absorbed as a figure label, or it sat inside
+        # the original figure region (a caption that renders inside the crop).
+        text_blocks = [
+            (r.x0, r.y0, r.x1, r.y1, t)
+            for j, (r, t) in enumerate(raw_blocks)
+            if not used_lbl[j] and not any(of.contains(r) for of in orig_figs)
+        ]
 
         # Reading order: top→bottom, left→right — but read column-by-column when the
         # page is clearly two-column, so left/right text isn't interleaved per line.
