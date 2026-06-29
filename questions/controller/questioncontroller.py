@@ -423,6 +423,20 @@ def _extract_docx_text(f):
     # Strip markers we can't display so they don't pollute the parsed text.
     text = re.sub(r'\[\[IMG:([^\]]+)\]\]',
                   lambda m: m.group(0) if m.group(1) in kept else '', text)
+
+    # Same noise cleanup as the PDF path: collapse dotted answer-line leaders and
+    # drop page-furniture lines (keep blanks as separators and any marker lines).
+    text = re.sub(r'[.…_]{4,}', ' ', text)
+    text = re.sub(r'(?:[._·]\s){4,}[._·]?', ' ', text)
+    # Word text-box/shape EMU coordinates leak in as long digit runs / coordinate
+    # pairs (e.g. 5153025203200, 2399515-75477). Real exam numbers are ≤4 digits,
+    # so this is safe (won't touch years, marks, or 2024-2026 ranges).
+    text = re.sub(r'-?\d{8,}', ' ', text)
+    text = re.sub(r'\d{5,}-\d{3,}|\d{3,}-\d{5,}', ' ', text)
+    text = '\n'.join(
+        ln for ln in text.split('\n')
+        if (not ln.strip()) or ('[[IMG:' in ln) or (not _is_furniture(ln))
+    )
     return text, eqn_objects, images, wmf_total, wmf_converted
 
 
