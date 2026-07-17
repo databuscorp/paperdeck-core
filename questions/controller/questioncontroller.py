@@ -1,15 +1,22 @@
 import json
 import re
+import uuid
 
 from django.http import HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.db import transaction
 from rest_framework.decorators import api_view
 
-from questions.processor.questionprocessor import question_req_schema, question_generate_req_schema
-from questions.service.questionservice import QuestionService
+from questions.processor.questionprocessor import (
+    question_req_schema,
+    question_generate_req_schema,
+    review_action_req_schema,
+    variant_req_schema,
+)
+from questions.service.questionservice import QuestionService, DEFAULT_TOP_N, MIN_SAMPLE_N
 from papers.service.aigeneratorservice import AIGeneratorService
 from utility.decorator.auth import auth_required
+from utility.decorator.ratelimit import rate_limit
 from utility.utilityobj import ErrorResponse
 
 
@@ -37,7 +44,15 @@ def _fetch(request):
         if isinstance(resp, ErrorResponse):
             return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
         return HttpResponse(resp.to_json(), content_type='application/json')
-    resp_list = service.fetch_all(scope['user_id'], org_id=org_id, course_id=course_id)
+    # Rejected questions are hidden from the bank by default (that is what rejecting
+    # one means). They stay reachable for review: ?verification=rejected asks for them
+    # by name, ?include_rejected=true keeps them alongside everything else.
+    verification = _csv(request.query_params.get('verification'))
+    include_rejected = _truthy(request.query_params.get('include_rejected'))
+    resp_list = service.fetch_all(
+        scope['user_id'], org_id=org_id, course_id=course_id,
+        verification=verification, include_rejected=include_rejected,
+    )
     return HttpResponse(json.dumps([q.to_dict() for q in resp_list]), content_type='application/json')
 
 
@@ -68,9 +83,13 @@ def _delete(request):
     return HttpResponse(resp.to_json(), content_type='application/json')
 
 
+# Cheaper per call than a paper, and legitimately used in bursts while a teacher builds a
+# section, so the ceiling is higher — but it is still a live Claude call per request.
 @csrf_exempt
 @api_view(['POST'])
 @auth_required
+@rate_limit('question_generate', limit=20, window_seconds=60)
+@rate_limit('question_generate', limit=200, window_seconds=3600)
 def generate_questions(request):
     try:
         obj = question_generate_req_schema.load(request.data)
@@ -79,6 +98,9 @@ def generate_questions(request):
             ErrorResponse(status=400, message=str(e)).to_json(),
             status=400, content_type='application/json'
         )
+
+    scope = request.scope
+    org_id = scope.get('org_id')
 
     # Resolve exam/subject/topic display strings from DB when FK IDs are provided
     exam = obj.exam or ''
@@ -110,6 +132,43 @@ def generate_questions(request):
         except Exception:
             pass
 
+    # Pay-before-work. AI spend is incurred the moment we call the model, so the wallet
+    # is checked FIRST and an org that can't cover the estimated cost is refused with
+    # 402 — nothing is generated, nothing is enqueued. The actual charge is metered from
+    # real token usage once the work is done (below, or in jobservice for the async path);
+    # it is no longer the client's job to report it.
+    from billing.service.billingservice import BillingService
+    billing = BillingService(scope)
+    gate = billing.preflight(org_id, 'questions', count=obj.count)
+    if gate:
+        return HttpResponse(gate.to_json(), status=gate.status, content_type='application/json')
+
+    # Large batches now include diagram repair and answer verification, so they can
+    # outlive an HTTP request. `async=true` enqueues a job and returns its id instead.
+    if str(request.data.get('async', '')).lower() in ('1', 'true', 'yes'):
+        from papers.models import GenerationJob
+        from papers.service import jobservice
+        from papers.service.paperservice import job_to_dict
+
+        job = GenerationJob.objects.create(
+            owner_id=scope['user_id'],
+            org_id=org_id,
+            kind=GenerationJob.KIND_QUESTIONS,
+            params={
+                'exam': exam, 'subject': subject, 'topic': topic or '',
+                'q_type': obj.q_type, 'difficulty': obj.difficulty,
+                'bloom': obj.bloom, 'count': obj.count,
+                # Must be carried on the job row: the worker rebuilds the call from
+                # these params alone, so a language left out here is a Hindi request
+                # that silently comes back English.
+                'language': obj.language or 'English',
+            },
+            status=GenerationJob.STATUS_QUEUED,
+            message='Queued',
+        )
+        jobservice.enqueue(job)
+        return HttpResponse(json.dumps(job_to_dict(job)), content_type='application/json')
+
     try:
         generator = AIGeneratorService()
         questions = generator.generate_questions(
@@ -120,14 +179,125 @@ def generate_questions(request):
             difficulty=obj.difficulty,
             bloom=obj.bloom,
             count=obj.count,
+            language=obj.language or 'English',
+        )
+        # Charge in the same request, from the usage the model actually reported. The
+        # response still carries `usage` for display, but the client is no longer trusted
+        # to bill itself — a client that never called /api/billing/charge/ was never
+        # billed. `ref` makes this one debit its own idempotency key.
+        usage = generator.last_usage or {}
+        charge = billing.charge_usage(
+            org_id,
+            input_tokens=usage.get('input_tokens', 0),
+            output_tokens=usage.get('output_tokens', 0),
+            # Cached prompt tokens live outside input_tokens and still cost money.
+            cache_read_tokens=usage.get('cache_read_input_tokens', 0),
+            cache_write_tokens=usage.get('cache_creation_input_tokens', 0),
+            reason=f'Question generation: {obj.count} × {obj.q_type} ({subject or exam})'.strip(),
+            ref=f'qgen:{uuid.uuid4().hex}',
         )
         return HttpResponse(
-            json.dumps({'questions': questions, 'usage': generator.last_usage}),
+            json.dumps({'questions': questions, 'usage': usage,
+                        # Where those tokens went: generation vs answer-verify vs
+                        # diagram-verify. Same total as `usage`; billed once, shown split.
+                        'usage_by_phase': getattr(generator, 'usage_by_phase', {}),
+                        'charged': charge.get('charged', 0),
+                        'balance': charge.get('balance')}),
             content_type='application/json',
         )
     except Exception as e:
         return HttpResponse(
             ErrorResponse(status=500, message=f'Generation failed: {str(e)}').to_json(),
+            status=500, content_type='application/json'
+        )
+
+
+# Same live-Claude-call-per-request profile as question generation, and used in the same
+# bursty way while a teacher builds unique-per-student versions — so it carries the same
+# two rate-limit windows.
+@csrf_exempt
+@api_view(['POST'])
+@auth_required
+@rate_limit('question_generate', limit=20, window_seconds=60)
+@rate_limit('question_generate', limit=200, window_seconds=3600)
+def generate_question_variants(request):
+    """Generate N parametric variants of one question — same concept, different numbers."""
+    try:
+        obj = variant_req_schema.load(request.data)
+    except Exception as e:
+        return HttpResponse(
+            ErrorResponse(status=400, message=str(e)).to_json(),
+            status=400, content_type='application/json'
+        )
+
+    scope = request.scope
+    org_id = scope.get('org_id')
+
+    # Resolve the source question. A saved id is loaded and scoped (to the org when the
+    # account has one, otherwise to the owner) so a teacher can't seed variants off
+    # another org's bank; an inline dict is used as-is for a generated-but-unsaved question.
+    question = None
+    if obj.question_id:
+        from questions.models import Question
+        qs = Question.objects.filter(id=obj.question_id)
+        qs = qs.filter(org_id=org_id) if org_id else qs.filter(owner_id=scope['user_id'])
+        row = qs.first()
+        if not row:
+            return HttpResponse(
+                ErrorResponse(status=404, message='Question not found.').to_json(),
+                status=404, content_type='application/json'
+            )
+        question = {
+            'text': row.text, 'options': row.options, 'q_type': row.q_type,
+            'difficulty': row.difficulty, 'marks': row.marks, 'subject': row.subject,
+            'topic': row.topic, 'exam': row.exam, 'bloom': row.bloom,
+            'solution': row.solution, 'numeric_answer': row.numeric_answer,
+            'unit': row.unit, 'image': row.image_svg,
+        }
+    elif isinstance(obj.question, dict):
+        question = obj.question
+    if not question:
+        return HttpResponse(
+            ErrorResponse(status=400, message='Provide a question_id or an inline question.').to_json(),
+            status=400, content_type='application/json'
+        )
+
+    # Clamp to a sane range: 0/negative is meaningless and an unbounded count is a way to
+    # turn one request into an arbitrarily large (and expensive) generation.
+    count = max(1, min(int(obj.count or 0), 10))
+    q_type = question.get('q_type') or 'MCQ'
+
+    # Pay-before-work, priced like a question batch: refuse a wallet that can't cover the
+    # estimate with 402 BEFORE any model call; the real charge comes from token usage after.
+    from billing.service.billingservice import BillingService
+    billing = BillingService(scope)
+    gate = billing.preflight(org_id, 'questions', count=count)
+    if gate:
+        return HttpResponse(gate.to_json(), status=gate.status, content_type='application/json')
+
+    try:
+        generator = AIGeneratorService()
+        variants = generator.generate_variants(question, count, obj.language or 'English')
+        usage = generator.last_usage or {}
+        charge = billing.charge_usage(
+            org_id,
+            input_tokens=usage.get('input_tokens', 0),
+            output_tokens=usage.get('output_tokens', 0),
+            cache_read_tokens=usage.get('cache_read_input_tokens', 0),
+            cache_write_tokens=usage.get('cache_creation_input_tokens', 0),
+            reason=f'Question variants: {count} × {q_type}',
+            ref=f'variants:{uuid.uuid4().hex}',
+        )
+        return HttpResponse(
+            json.dumps({'variants': variants, 'usage': usage,
+                        'usage_by_phase': getattr(generator, 'usage_by_phase', {}),
+                        'charged': charge.get('charged', 0),
+                        'balance': charge.get('balance')}),
+            content_type='application/json',
+        )
+    except Exception as e:
+        return HttpResponse(
+            ErrorResponse(status=500, message=f'Variant generation failed: {str(e)}').to_json(),
             status=500, content_type='application/json'
         )
 
@@ -497,9 +667,13 @@ def _extract_docx_text(f):
     return text, eqn_objects, images, wmf_total, wmf_converted
 
 
+# One upload = one 32k-output-token parse call. Tighter than question generation because
+# a retry loop here is both expensive and easy to trigger from a flaky file upload.
 @csrf_exempt
 @api_view(['POST'])
 @auth_required
+@rate_limit('paper_import', limit=10, window_seconds=60)
+@rate_limit('paper_import', limit=60, window_seconds=3600)
 def import_paper(request):
     """Extract questions from an uploaded PDF/Word paper (text-based only)."""
     f = request.FILES.get('file')
@@ -559,3 +733,98 @@ def import_paper(request):
     except Exception as e:
         return HttpResponse(ErrorResponse(status=500, message=f'Import failed: {str(e)}').to_json(),
                             status=500, content_type='application/json')
+
+
+# ── Review queue + quality dashboard ──────────────────────────────────────────
+# The verifier (papers/service/verificationservice.py) produces a verdict on every
+# AI-generated answer key. These two endpoints are where that signal is acted on:
+# `review` is the teacher's work queue, `quality` is the org-wide view of whether
+# generation is getting better or worse.
+
+
+def _csv(value):
+    """'flagged,corrected' → ['flagged', 'corrected']. None/'' → None."""
+    if not value:
+        return None
+    parts = [p.strip() for p in str(value).split(',') if p.strip()]
+    return parts or None
+
+
+def _truthy(value) -> bool:
+    return str(value or '').lower() in ('1', 'true', 'yes')
+
+
+def _int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+@csrf_exempt
+@api_view(['GET', 'POST'])
+@auth_required
+@transaction.atomic
+def review(request):
+    """GET  — questions needing a human (flagged + corrected by default).
+    POST — approve / reject / edit one of them."""
+    if request.method == 'GET':
+        return _review_fetch(request)
+    return _review_act(request)
+
+
+def _review_fetch(request):
+    scope = request.scope
+    service = QuestionService(scope)
+    resp = service.review_queue(
+        scope['user_id'],
+        org_id=scope.get('org_id'),
+        status=_csv(request.query_params.get('status')),
+        subject=request.query_params.get('subject'),
+        topic=request.query_params.get('topic'),
+        exam=request.query_params.get('exam'),
+        course_id=request.query_params.get('course_id'),
+        index=_int(request.query_params.get('page'), 1),
+        limit=_int(request.query_params.get('limit'), 20),
+    )
+    return HttpResponse(resp.to_json(), content_type='application/json')
+
+
+def _review_act(request):
+    scope = request.scope
+    try:
+        obj = review_action_req_schema.load(request.data)
+    except Exception as e:
+        return HttpResponse(
+            ErrorResponse(status=400, message=str(e)).to_json(),
+            status=400, content_type='application/json'
+        )
+
+    service = QuestionService(scope)
+    resp = service.review_action(obj, scope['user_id'], org_id=scope.get('org_id'))
+    if isinstance(resp, ErrorResponse):
+        return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')
+    return HttpResponse(resp.to_json(), content_type='application/json')
+
+
+@csrf_exempt
+@api_view(['GET'])
+@auth_required
+def quality(request):
+    """Verification stats for the org: counts + rates by status, a drift time-series,
+    and the worst subjects/topics. Rates below ?min_n= are suppressed rather than
+    reported — see MIN_SAMPLE_N in questions/service/questionservice.py."""
+    scope = request.scope
+    service = QuestionService(scope)
+    resp = service.quality(
+        scope['user_id'],
+        org_id=scope.get('org_id'),
+        days=_int(request.query_params.get('days'), 30),
+        bucket=request.query_params.get('bucket') or 'day',
+        min_n=_int(request.query_params.get('min_n'), MIN_SAMPLE_N),
+        subject=request.query_params.get('subject'),
+        exam=request.query_params.get('exam'),
+        course_id=request.query_params.get('course_id'),
+        top=_int(request.query_params.get('top'), DEFAULT_TOP_N),
+    )
+    return HttpResponse(resp.to_json(), content_type='application/json')

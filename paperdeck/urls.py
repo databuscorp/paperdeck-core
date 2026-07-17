@@ -20,4 +20,6 @@ urlpatterns = [
     path('api/latex/', include('latex.urls')),
     path('api/printtemplates/', include('printtemplates.urls')),
     path('api/billing/', include('billing.urls')),
+    path('api/attempts/', include('attempts.urls')),
+    path('api/omr/', include('omr.urls')),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

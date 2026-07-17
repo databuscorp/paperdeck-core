@@ -2,12 +2,16 @@ Django==5.1.5
 djangorestframework==3.15.2
 djangorestframework-simplejwt==5.3.1
 django-cors-headers==4.6.0
+
+# Media (rendered diagrams + user uploads) on Azure Blob Storage. The [azure] extra pulls
+# in azure-storage-blob; the backend is selected in settings.STORAGES when AZURE_* env is set.
+django-storages[azure]==1.14.6
 python-dotenv==1.0.1
 psycopg2-binary==2.9.11
 dataclasses-json==0.6.7
 marshmallow-dataclass==8.7.1
 dacite==1.8.1
-anthropic==0.40.0
+anthropic==0.116.0
 Pillow==11.1.0
 pypdf==6.13.3          # PDF text extraction for paper import
 pymupdf==1.27.2.3      # PDF figure/diagram extraction (vector + raster) for paper import
@@ -21,12 +25,19 @@ numpy>=1.26.0
 sympy>=1.12
 reportlab>=4.1.0
 
-# Optional – significantly improves PNG export quality
-# cairosvg>=2.7.0   # requires system libs: libcairo2 (apt) / cairo (brew)
+# REQUIRED for PNG export and for embedding diagrams in PDFs. Without it the PDF
+# composer raises rather than printing a blank figure, so exam papers with diagrams
+# cannot be exported at all.
+# Needs the native cairo library:
+#   macOS:        brew install cairo
+#   Debian/Ubuntu: apt-get install -y libcairo2
+# On Apple Silicon, cairocffi needs DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib.
+cairosvg>=2.7.0
 
-# Optional – circuit diagrams (schemdraw requires matplotlib)
+# Circuit diagrams (schemdraw requires matplotlib)
 schemdraw>=0.18
 
-# Optional – organic chemistry structure rendering
-# rdkit-pypi>=2022.9.5   # use: pip install rdkit-pypi
-#                        # OR via conda: conda install -c conda-forge rdkit
+# REQUIRED for correct organic-chemistry structure rendering. Without it the
+# chemistry renderer falls back to a crude SMILES regex parser that often prints the
+# SMILES string instead of drawing the molecule.
+rdkit>=2023.9.1

@@ -6,9 +6,13 @@ Supports full question paper layout with sections and question numbering.
 from __future__ import annotations
 
 import io
+import logging
 import os
+import re
 import tempfile
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -20,45 +24,83 @@ from reportlab.platypus import (
 )
 from reportlab.platypus.flowables import HRFlowable
 
-# Optional: cairosvg for SVG → PNG conversion (better quality)
+# cairosvg rasterizes diagram SVGs for embedding. It is REQUIRED to export a paper
+# containing diagrams — svg_to_png_bytes raises without it rather than printing a
+# blank figure. (The old PIL fallback did exactly that.)
+#
+# NOTE the broad except: with cairosvg installed but the *native* cairo library
+# missing, cairocffi raises OSError, not ImportError — catching only ImportError
+# would let it escape and break the app at import time.
 try:
     import cairosvg
     CAIROSVG_AVAILABLE = True
-except ImportError:
+except Exception:   # ImportError (not installed) | OSError (native libcairo missing)
     CAIROSVG_AVAILABLE = False
-
-try:
-    from PIL import Image as PILImage
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
 
 PAGE_W, PAGE_H = A4
 MARGIN = 2 * cm
 
 
+def _svg_aspect(svg_content: str) -> float:
+    """width/height of an SVG, from its viewBox or width/height attrs. 1.5 if unknown."""
+    m = re.search(r'viewBox\s*=\s*["\']\s*[-\d.]+[ ,]+[-\d.]+[ ,]+([\d.]+)[ ,]+([\d.]+)',
+                  svg_content)
+    if not m:
+        w = re.search(r'\bwidth\s*=\s*["\']([\d.]+)', svg_content)
+        h = re.search(r'\bheight\s*=\s*["\']([\d.]+)', svg_content)
+        if not (w and h):
+            return 1.5
+        wv, hv = float(w.group(1)), float(h.group(1))
+    else:
+        wv, hv = float(m.group(1)), float(m.group(2))
+    return (wv / hv) if hv else 1.5
+
+
+def _fit_box(svg_content: str, max_w_cm: float, max_h_cm: float) -> tuple:
+    """Largest (w, h) in cm that fits the box while preserving the SVG's aspect ratio.
+
+    The old code hardcoded 10cm x 6.5cm for every diagram, which stretched anything
+    that wasn't ~3:2 — a tall food chain or a wide number line came out visibly
+    distorted in the printed paper.
+    """
+    aspect = _svg_aspect(svg_content)
+    w = max_w_cm
+    h = w / aspect
+    if h > max_h_cm:
+        h = max_h_cm
+        w = h * aspect
+    return w, h
+
+
+class PNGConversionUnavailable(RuntimeError):
+    """Raised when an SVG cannot be rasterized for the PDF.
+
+    Deliberately loud. This used to return a blank white image, which produced a
+    printed exam paper with an empty box where the diagram should be — a defect no
+    downstream code could detect and no teacher would catch until the exam hall.
+    """
+
+
 def svg_to_png_bytes(svg_content: str, width: int = 600, height: int = 400) -> bytes:
-    """Convert SVG string to PNG bytes for embedding in PDF."""
-    if CAIROSVG_AVAILABLE:
+    """Convert an SVG string to PNG bytes for embedding in a PDF.
+
+    Raises PNGConversionUnavailable if cairosvg (and its native cairo library) is not
+    installed, rather than silently emitting a blank placeholder image.
+    """
+    if not CAIROSVG_AVAILABLE:
+        raise PNGConversionUnavailable(
+            "cairosvg is required to embed diagrams in a PDF. Install it with "
+            "`pip install cairosvg` plus the native cairo library "
+            "(macOS: `brew install cairo`, Debian/Ubuntu: `apt install libcairo2`)."
+        )
+    try:
         return cairosvg.svg2png(
             bytestring=svg_content.encode("utf-8"),
             output_width=width,
             output_height=height,
         )
-    # Fallback: save SVG to temp file and use PIL to create a blank placeholder
-    png_buf = io.BytesIO()
-    if PIL_AVAILABLE:
-        img = PILImage.new("RGB", (width, height), color=(255, 255, 255))
-        img.save(png_buf, format="PNG")
-    else:
-        # Minimal 1x1 PNG header
-        import base64
-        png_buf.write(base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
-            "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-        ))
-    png_buf.seek(0)
-    return png_buf.read()
+    except Exception as exc:
+        raise PNGConversionUnavailable(f"SVG→PNG conversion failed: {exc}") from exc
 
 
 def _build_styles():
@@ -236,15 +278,24 @@ def _build_question_flowables(q: Dict[str, Any], styles) -> List:
     # Diagram (if any)
     if diagram_svg:
         try:
-            png_bytes = svg_to_png_bytes(diagram_svg, width=400, height=260)
-            img_buf = io.BytesIO(png_bytes)
-            img = Image(img_buf, width=10 * cm, height=6.5 * cm)
+            w_cm, h_cm = _fit_box(diagram_svg, max_w_cm=10.0, max_h_cm=6.5)
+            png_bytes = svg_to_png_bytes(
+                diagram_svg, width=int(w_cm * 40), height=int(h_cm * 40)
+            )
+            img = Image(io.BytesIO(png_bytes), width=w_cm * cm, height=h_cm * cm)
             img.hAlign = "LEFT"
             elements.append(Spacer(1, 2 * mm))
             elements.append(img)
             elements.append(Spacer(1, 2 * mm))
         except Exception:
-            pass   # skip diagram if conversion fails
+            # Never drop a figure silently — a figure-based question printed without
+            # its figure is unanswerable, and a blank gap gives no clue why. Print a
+            # visible marker so it is caught when proofing, not in the exam hall.
+            logger.exception("Could not embed diagram for Q%s", number)
+            elements.append(Paragraph(
+                "<i>[diagram could not be rendered — see the online paper]</i>",
+                styles["MetaInfo"],
+            ))
 
     # Options
     if options:
@@ -281,11 +332,15 @@ def generate_diagram_pdf(rendered_diagram_data: Dict[str, Any]) -> bytes:
     ]
     if svg_content:
         try:
-            png_bytes = svg_to_png_bytes(svg_content, width=600, height=420)
-            img = Image(io.BytesIO(png_bytes), width=15 * cm, height=10.5 * cm)
+            w_cm, h_cm = _fit_box(svg_content, max_w_cm=15.0, max_h_cm=10.5)
+            png_bytes = svg_to_png_bytes(
+                svg_content, width=int(w_cm * 40), height=int(h_cm * 40)
+            )
+            img = Image(io.BytesIO(png_bytes), width=w_cm * cm, height=h_cm * cm)
             img.hAlign = "CENTER"
             story.append(img)
         except Exception as e:
+            logger.exception("Could not embed standalone diagram")
             story.append(Paragraph(f"[Diagram rendering error: {e}]", styles["QuestionText"]))
     if description:
         story.append(Spacer(1, 6 * mm))

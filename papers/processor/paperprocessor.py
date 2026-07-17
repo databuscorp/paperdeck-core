@@ -20,6 +20,8 @@ class PaperGenerateRequest:
     exam_type:        Optional[str] = None
     instructions:     Optional[str] = None
     id:               Optional[int] = None
+    # Non-English generates every question in English AND this language, in one call.
+    language:         Optional[str] = 'English'
 
 
 @dataclass

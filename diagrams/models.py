@@ -88,16 +88,18 @@ class RenderedDiagram(models.Model):
 
     @property
     def svg_url(self):
-        from django.conf import settings
+        # default_storage.url() resolves the stored key to a real URL for whichever backend
+        # is active: MEDIA_URL-prefixed locally, a short-lived SAS-signed URL on Azure Blob.
+        from django.core.files.storage import default_storage
         if self.svg_path:
-            return settings.MEDIA_URL + self.svg_path
+            return default_storage.url(self.svg_path)
         return None
 
     @property
     def png_url(self):
-        from django.conf import settings
+        from django.core.files.storage import default_storage
         if self.png_path:
-            return settings.MEDIA_URL + self.png_path
+            return default_storage.url(self.png_path)
         return None
 
 
@@ -133,3 +135,40 @@ class RenderingJob(models.Model):
 
     def __str__(self):
         return f"Job[{self.id}] {self.status}"
+
+
+class DiagramDemand(models.Model):
+    """Durable tally of diagrams the engine was asked to draw but could NOT.
+
+    Every unrenderable figure (an unknown subtype, an unknown diagram_type, or a renderer
+    crash) is recorded here, keyed by (diagram_type, subtype, category) with a running count.
+    It turns the `paperdeck.diagram_demand` log stream — ephemeral on a container host — into
+    a queryable, ranked backlog: the highest-count rows are the renderers worth building next.
+    Written from diagrams.service.demand.record_demand; read by `manage.py diagram_demand`.
+    """
+    CATEGORY_UNKNOWN_SUBTYPE = "unknown_subtype"
+    CATEGORY_UNKNOWN_TYPE = "unknown_type"
+    CATEGORY_RENDER_ERROR = "render_error"
+    CATEGORY_OTHER = "other"
+
+    diagram_type = models.CharField(max_length=50)
+    subtype = models.CharField(max_length=100)
+    category = models.CharField(max_length=30, default=CATEGORY_OTHER)
+    count = models.PositiveIntegerField(default=0)
+    sample_reason = models.TextField(blank=True, default="")
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "pd_diagram_demand"
+        ordering = ["-count"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["diagram_type", "subtype", "category"],
+                name="uniq_diagram_demand_key",
+            ),
+        ]
+        indexes = [models.Index(fields=["-count"])]
+
+    def __str__(self):
+        return f"{self.diagram_type}/{self.subtype} [{self.category}] ×{self.count}"

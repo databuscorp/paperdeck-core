@@ -37,6 +37,12 @@ def status(request):
 @auth_required
 @transaction.atomic
 def charge(request):
+    """DEPRECATED. Kept only for older frontends that still charge themselves after a
+    generation. Billing is now metered server-side at the point the AI work completes
+    (papers/questions generation + generation jobs), because a client that never called
+    this endpoint was simply never billed. Calls for work the server already charged are
+    idempotent no-ops — see BillingService.charge. Delete once no client calls it.
+    """
     org_id, err = _require_org(request)
     if err:
         return err
@@ -46,6 +52,7 @@ def charge(request):
         input_tokens=obj.input_tokens, output_tokens=obj.output_tokens,
         question_count=obj.question_count, with_answer_key=obj.with_answer_key,
         versions=obj.versions, title=obj.title,
+        ref=(f'job:{obj.job_id}' if obj.job_id else None),
     )
     if isinstance(resp, ErrorResponse):
         return HttpResponse(resp.to_json(), status=resp.status, content_type='application/json')

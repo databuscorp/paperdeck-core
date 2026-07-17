@@ -1,0 +1,35 @@
+# Keep the build context small and the image reproducible. Without this, `docker build .`
+# from a dev machine copies the local virtualenv (~465 MB of host-platform binaries)
+# into a Linux image, where it is both useless and actively confusing.
+venv/
+antenv/
+.venv/
+env/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+.git/
+.github/
+.idea/
+.vscode/
+
+# Secrets must come from App Service application settings, never be baked into a layer.
+.env
+.env.*
+*.pem
+
+# Local-only artifacts
+db.sqlite3
+media/
+staticfiles/
+*.log
+
+Dockerfile
+docker-compose.yml
+.dockerignore
+README.md
+*.md

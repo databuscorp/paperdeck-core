@@ -6,6 +6,7 @@ from marshmallow import EXCLUDE
 
 @dataclass
 class ChargeRequest:
+    """DEPRECATED — generations are charged server-side now. See BillingService.charge."""
     # Token-based (preferred): credits are derived from real Claude usage.
     input_tokens:    int = 0
     output_tokens:   int = 0
@@ -14,6 +15,9 @@ class ChargeRequest:
     with_answer_key: bool = False
     versions:        int = 1
     title:           str = ''
+    # Optional idempotency key. A client that charges for a generation job can send its
+    # id; the server already billed `job:<id>`, so the charge collapses to a no-op.
+    job_id:          int = 0
 
 
 @dataclass

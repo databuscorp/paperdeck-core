@@ -271,12 +271,16 @@ def health_check(request):
     except ImportError:
         checks["reportlab"] = "not installed"
 
-    # cairosvg
+    # cairosvg. Broad except: with the package installed but the native cairo library
+    # missing, cairocffi raises OSError — and a health check that crashes while
+    # reporting health is worse than useless.
     try:
         import cairosvg
         checks["cairosvg"] = cairosvg.__version__
     except ImportError:
-        checks["cairosvg"] = "not installed (PNG export disabled)"
+        checks["cairosvg"] = "not installed (PNG export and PDF diagrams disabled)"
+    except Exception as exc:
+        checks["cairosvg"] = f"installed but unusable — native cairo library missing ({exc})"
 
     # pydantic
     try:
