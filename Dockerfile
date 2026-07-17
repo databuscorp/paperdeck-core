@@ -1,5 +1,8 @@
 # Python 3.13 to match the version the app is developed and CI-tested against.
-FROM python:3.13-slim
+# Pin the Debian release (bookworm) too: the untagged -slim tag moved to trixie (13),
+# where libgdk-pixbuf2.0-0 was renamed and the apt install below fails with
+# "no installation candidate". The render-lib package names are verified against bookworm.
+FROM python:3.13-slim-bookworm
 
 # System dependencies for the rendering libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
