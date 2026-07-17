@@ -1,5 +1,5 @@
 # Build the container, push it to GitHub Container Registry, and deploy it to the
-# api-paperdeck Azure App Service.
+# paperdeck-core Azure App Service (a Web App for Containers).
 #
 # Why a container rather than the previous Oryx ("Code") deployment: the diagram engine
 # needs native libraries (libcairo2 for cairosvg; libX11/libXext/libXrender/libfontconfig
@@ -10,7 +10,7 @@
 #
 # GHCR is used instead of ACR: App Service can pull from any registry, and GHCR is free.
 
-name: Build and deploy container to Azure Web App - api-paperdeck
+name: Build and deploy container to Azure Web App - paperdeck-core
 
 on:
   push:
@@ -135,6 +135,6 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'api-paperdeck'
+          app-name: 'paperdeck-core'
           slot-name: 'Production'
           images: ghcr.io/${{ github.repository }}:${{ github.sha }}
